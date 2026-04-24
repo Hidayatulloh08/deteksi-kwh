@@ -1,20 +1,26 @@
 import requests
 
-TOKEN = "8237045990:AAHjLOe62gX96guhsH1BQcXhkp83sxdcJLw"
-CHAT_ID = "7510387628"
-
-url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+url = "https://deteksi-kwh-production.up.railway.app/data"
 
 data = {
-    "chat_id": CHAT_ID,
-    "text": "🔥 TEST BERHASIL!"
+    "voltage": 220,
+    "current": 3,
+    "power": 700,   # > 500
+    "kwh": 1,
+    "biaya": 1500
 }
 
-print("Mengirim ke Telegram...")
-
 try:
-    res = requests.post(url, data=data)
-    print("Status Code:", res.status_code)
-    print("Response:", res.text)
+    res = requests.post(url, json=data, timeout=10)
+
+    print("STATUS:", res.status_code)
+    print("RESPON:", res.text)
+
+except requests.exceptions.Timeout:
+    print("❌ Timeout (server lama respon)")
+
+except requests.exceptions.ConnectionError:
+    print("❌ Tidak bisa connect ke server")
+
 except Exception as e:
-    print("ERROR:", e)
+    print("❌ ERROR:", e)
