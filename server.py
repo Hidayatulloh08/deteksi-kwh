@@ -152,31 +152,25 @@ def receive_data():
         # =========================
         # 🔥 SMART ALERT (ANTI SPAM)
         # =========================
-
-
-# 🔥 SMART ALERT (ANTI SPAM + DEBUG)
-# =========================
-
         print("POWER SEKARANG:", power)
 
         # 🔴 BEBAN TINGGI
-       
         if power > 500:
-            print("DETEKSI: BEBAN TINGGI (FORCE)")
-            kirim_notif("🔴 TEST Beban tinggi terdeteksi!")
+            if not last_status["high"]:
+                print("KIRIM: BEBAN TINGGI")
+                kirim_notif("🔴 Beban tinggi terdeteksi!")
+                last_status["high"] = True
         else:
             last_status["high"] = False
 
-
         # ⚫ LISTRIK MATI
-        if power <= 1:  # 🔥 FIX: jangan == 0 (sensor kadang tidak 0 persis)
-            print("DETEKSI: LISTRIK MATI")
+        if power <= 1:
             if not last_status["off"]:
+                print("KIRIM: LISTRIK MATI")
                 kirim_notif("⚫ Listrik mati!")
                 last_status["off"] = True
         else:
             last_status["off"] = False
-
 
         # ⚠️ LONJAKAN DAYA
         if len(df) > 2:
@@ -186,19 +180,21 @@ def receive_data():
             print("PREV:", prev, "NOW:", power, "SELISIH:", selisih)
 
             if selisih > 200:
-                print("DETEKSI: LONJAKAN DAYA")
                 if not last_status["spike"]:
+                    print("KIRIM: LONJAKAN")
                     kirim_notif("⚠️ Lonjakan daya terdeteksi!")
                     last_status["spike"] = True
             else:
                 last_status["spike"] = False
 
         # =========================
-        # ⏱ TIMER NOTIF
+        # ⏱ TIMER NOTIF (ANTI TABRAKAN)
         # =========================
         current_time = time.time()
 
-        if current_time - last_notif_time > 30:
+        alert_active = any(last_status.values())
+
+        if current_time - last_notif_time > 30 and not alert_active:
             pesan = f"""
 <b>⚡ MONITORING</b>
 
@@ -213,21 +209,23 @@ def receive_data():
 """
 
             # 🔥 ALERT AI
-            if prediksi_ai and prediksi_ai > budget:
+            if prediksi_ai is not None and prediksi_ai > budget:
                 pesan += "\n⚠️ Prediksi over budget!"
 
-            if prediksi_ai:
+            if prediksi_ai is not None:
                 pesan += f"\n🤖 Prediksi: Rp {int(prediksi_ai)}"
 
             kirim_notif(pesan)
             last_notif_time = current_time
 
+        # ===== RESPONSE =====
         return jsonify({
             "status": "ok",
             "total": int(total),
-            "prediksi_ai": int(prediksi_ai) if prediksi_ai else 0,
+            "prediksi_ai": int(prediksi_ai) if prediksi_ai is not None else 0,
             "jam_boros": jam_boros,
-            "hari_boros": hari_boros
+            "hari_boros": hari_boros,
+            "ai_status": "aktif" if prediksi_ai is not None else "nonaktif"
         })
 
     except Exception as e:
