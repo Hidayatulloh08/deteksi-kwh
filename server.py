@@ -26,21 +26,11 @@ try:
     model = load_model(MODEL_PATH)
     print("✅ Model LSTM loaded")
 except Exception as e:
-    print("⚠️ Model error:", e)
+    print("⚠️ Model tidak ditemukan:", e)
 
-# ===== SMART ALERT STATE =====
-last_status = {
-    "high": False,
-    "off": False,
-    "spike": False
-}
-
-# ===== GLOBAL TIMER =====
+# ===== GLOBAL =====
 last_notif_time = 0
-
-# ===== BUDGET =====
-budget = 350000
-
+last_power_state = None  # 🔥 untuk deteksi ON/OFF
 
 # ===== TELEGRAM =====
 def kirim_notif(pesan):
@@ -59,15 +49,14 @@ def kirim_notif(pesan):
 
         print("📩 TELEGRAM:", res.status_code)
     except Exception as e:
-        print("ERROR TELEGRAM:", e)
-
+        print("❌ ERROR TELEGRAM:", e)
 
 # ===== AI =====
 def prediksi_besok(df):
-    try:
-        if model is None or len(df) < WINDOW:
-            return None
+    if model is None or len(df) < WINDOW:
+        return None
 
+    try:
         data = df[['biaya']].values
         scaled = scaler.fit_transform(data)
 
@@ -78,22 +67,50 @@ def prediksi_besok(df):
         hasil = scaler.inverse_transform(pred)
 
         return float(hasil[0][0])
-
     except Exception as e:
         print("❌ ERROR AI:", e)
         return None
 
+# ===== EVALUASI AI =====
+def hitung_error(df):
+    try:
+        if model is None or len(df) < WINDOW + 1:
+            return None, None
+
+        y_true = df['biaya'].values[WINDOW:]
+        y_pred = []
+
+        for i in range(WINDOW, len(df)):
+            window_data = df['biaya'].values[i-WINDOW:i]
+            scaled = scaler.fit_transform(window_data.reshape(-1,1))
+
+            X = np.array([scaled[:,0]]).reshape((1, WINDOW, 1))
+            pred = model.predict(X, verbose=0)
+            hasil = scaler.inverse_transform(pred)
+
+            y_pred.append(hasil[0][0])
+
+        y_true = np.array(y_true)
+        y_pred = np.array(y_pred)
+
+        mae = np.mean(np.abs(y_true - y_pred))
+        mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+
+        return float(mae), float(mape)
+
+    except Exception as e:
+        print("❌ ERROR EVALUASI:", e)
+        return None, None
 
 # ===== ROOT =====
 @app.route('/')
 def home():
     return "API AKTIF"
 
-
-# ===== DATA =====
+# ===== DATA MASUK =====
 @app.route('/data', methods=['POST'])
 def receive_data():
-    global last_notif_time, last_status
+    global last_notif_time, last_power_state
 
     try:
         data = request.get_json()
@@ -103,7 +120,7 @@ def receive_data():
         print("\n=== DATA MASUK ===")
         print(data)
 
-        # ===== SAFE PARSE =====
+        # ===== PARSE =====
         voltage = float(data.get('voltage', 0))
         current = float(data.get('current', 0))
         power = float(data.get('power', 0))
@@ -112,6 +129,38 @@ def receive_data():
 
         now = datetime.now()
 
+        # ===== DETEKSI ON/OFF =====
+        current_state = "ON" if power > 1 else "OFF"
+
+        if last_power_state is not None:
+            if last_power_state == "ON" and current_state == "OFF":
+                kirim_notif("⚫ Listrik mati!")
+
+            elif last_power_state == "OFF" and current_state == "ON":
+                kirim_notif("🟢 Listrik menyala kembali!")
+
+        last_power_state = current_state
+
+        # ===== DETEKSI EVENT =====
+        event = "NORMAL"
+
+        if power > 500:
+            event = "HIGH_LOAD"
+
+        elif power <= 1:
+            event = "POWER_OFF"
+
+        # SPIKE
+        if os.path.exists(FILE):
+            df_old = pd.read_csv(FILE)
+            if len(df_old) > 2:
+                prev = df_old['power'].iloc[-1]
+                if abs(power - prev) > 200:
+                    event = "SPIKE"
+
+        print("EVENT:", event)
+
+        # ===== SAVE =====
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "day": now.day,
@@ -120,12 +169,12 @@ def receive_data():
             "current": current,
             "power": power,
             "kwh": kwh,
-            "biaya": biaya
+            "biaya": biaya,
+            "event": event
         }
 
         df_new = pd.DataFrame([row])
 
-        # ===== SAVE =====
         if not os.path.exists(FILE):
             df_new.to_csv(FILE, index=False)
         else:
@@ -134,104 +183,58 @@ def receive_data():
         df = pd.read_csv(FILE)
 
         # ===== ANALISIS =====
-        total = float(df['biaya'].sum())
-        rata = float(df['biaya'].mean())
+        total = df['biaya'].sum()
+        rata = df['biaya'].mean()
         pred_bulanan = rata * 30
 
         # ===== AI =====
         prediksi_ai = prediksi_besok(df)
 
-        # ===== POLA =====
-        jam_boros = 0
-        hari_boros = 0
+        # ===== EVALUASI =====
+        mae, mape = hitung_error(df)
 
-        if len(df) > 3:
-            jam_boros = int(df.groupby('hour')['biaya'].mean().idxmax())
-            hari_boros = int(df.groupby('day')['biaya'].sum().idxmax())
+        # ===== NOTIF EVENT =====
+        if event == "HIGH_LOAD":
+            kirim_notif("🔴 HIGH LOAD terdeteksi!")
 
-        # =========================
-        # 🔥 SMART ALERT (ANTI SPAM)
-        # =========================
-        print("POWER SEKARANG:", power)
+        elif event == "SPIKE":
+            kirim_notif("⚠️ LONJAKAN DAYA!")
 
-        # 🔴 BEBAN TINGGI
-        if power > 500:
-            if not last_status["high"]:
-                print("KIRIM: BEBAN TINGGI")
-                kirim_notif("🔴 Beban tinggi terdeteksi!")
-                last_status["high"] = True
-        else:
-            last_status["high"] = False
-
-        # ⚫ LISTRIK MATI
-        if power <= 1:
-            if not last_status["off"]:
-                print("KIRIM: LISTRIK MATI")
-                kirim_notif("⚫ Listrik mati!")
-                last_status["off"] = True
-        else:
-            last_status["off"] = False
-
-        # ⚠️ LONJAKAN DAYA
-        if len(df) > 2:
-            prev = float(df['power'].iloc[-2])
-            selisih = abs(power - prev)
-
-            print("PREV:", prev, "NOW:", power, "SELISIH:", selisih)
-
-            if selisih > 200:
-                if not last_status["spike"]:
-                    print("KIRIM: LONJAKAN")
-                    kirim_notif("⚠️ Lonjakan daya terdeteksi!")
-                    last_status["spike"] = True
-            else:
-                last_status["spike"] = False
-
-        # =========================
-        # ⏱ TIMER NOTIF (ANTI TABRAKAN)
-        # =========================
+        # ===== TIMER =====
         current_time = time.time()
 
-        alert_active = any(last_status.values())
-
-        if current_time - last_notif_time > 30 and not alert_active:
+        if current_time - last_notif_time > 30:
             pesan = f"""
-<b>⚡ MONITORING</b>
+<b>⚡ MONITORING LISTRIK</b>
 
-🔌 {voltage} V
-⚡ {current} A
-💡 {power} W
-
+💡 Power: {power} W
 💰 Total: Rp {int(total)}
 📈 Bulanan: Rp {int(pred_bulanan)}
-⏰ Jam boros: {jam_boros}
-📅 Hari boros: {hari_boros}
+📊 Event: {event}
 """
 
-            # 🔥 ALERT AI
-            if prediksi_ai is not None and prediksi_ai > budget:
-                pesan += "\n⚠️ Prediksi over budget!"
-
-            if prediksi_ai is not None:
+            if prediksi_ai:
                 pesan += f"\n🤖 Prediksi: Rp {int(prediksi_ai)}"
+
+            if mae and mape:
+                pesan += f"\n📉 MAE: {int(mae)} | MAPE: {round(mape,2)}%"
 
             kirim_notif(pesan)
             last_notif_time = current_time
 
-        # ===== RESPONSE =====
         return jsonify({
             "status": "ok",
+            "event": event,
+            "power_state": current_state,
             "total": int(total),
-            "prediksi_ai": int(prediksi_ai) if prediksi_ai is not None else 0,
-            "jam_boros": jam_boros,
-            "hari_boros": hari_boros,
-            "ai_status": "aktif" if prediksi_ai is not None else "nonaktif"
+            "prediksi_ai": int(prediksi_ai) if prediksi_ai else 0,
+            "mae": mae,
+            "mape": mape
         })
 
     except Exception as e:
-        print("🔥 ERROR BESAR:", e)
+        print("🔥 ERROR:", e)
         return jsonify({"error": str(e)}), 500
-
 
 # ===== RUN =====
 if __name__ == "__main__":
