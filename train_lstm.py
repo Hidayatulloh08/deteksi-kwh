@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 import joblib
+import matplotlib
+matplotlib.use('Agg')  # 🔥 penting untuk server/headless
 import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import MinMaxScaler
@@ -11,17 +13,19 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 
 # ===== LOAD DATA =====
-df = pd.read_csv("data.csv", on_bad_lines='skip')
+df = pd.read_csv("data_dummy.csv")
+
+# ===== VALIDASI KOLOM =====
+if 'biaya' not in df.columns:
+    raise Exception("Kolom 'biaya' tidak ditemukan di CSV")
 
 # ===== CLEANING =====
 df = df.dropna(subset=["biaya"])
 
-# 🔥 SMOOTHING
-df['biaya'] = df['biaya'].rolling(window=3).mean()
+# 🔥 SMOOTHING (lebih stabil)
+df['biaya'] = df['biaya'].rolling(window=3, min_periods=1).mean()
 
-# hapus NaN hasil smoothing
-df = df.dropna()
-
+# ===== DATASET =====
 dataset = df[['biaya']].values
 
 # ===== SCALING =====
@@ -30,6 +34,7 @@ scaled = scaler.fit_transform(dataset)
 
 # 🔥 SIMPAN SCALER (WAJIB UNTUK SERVER)
 joblib.dump(scaler, "scaler.save")
+print("✅ Scaler disimpan")
 
 # ===== WINDOW =====
 window = 14
@@ -41,6 +46,10 @@ for i in range(window, len(scaled)):
     y.append(scaled[i, 0])
 
 X, y = np.array(X), np.array(y)
+
+# 🔥 VALIDASI DATA
+if len(X) < 10:
+    raise Exception("Data terlalu sedikit untuk training")
 
 X = X.reshape((X.shape[0], X.shape[1], 1))
 
@@ -67,23 +76,27 @@ history = model.fit(
     X_train, y_train,
     epochs=50,
     batch_size=8,
-    validation_data=(X_test, y_test)
+    validation_data=(X_test, y_test),
+    verbose=1
 )
 
 # ===== PREDIKSI =====
-pred = model.predict(X_test)
+pred = model.predict(X_test, verbose=0)
 
-# inverse scaling
+# 🔥 INVERSE SCALING
 pred_inv = scaler.inverse_transform(pred)
 y_test_inv = scaler.inverse_transform(y_test.reshape(-1,1))
 
 # ===== EVALUASI =====
 mae = mean_absolute_error(y_test_inv, pred_inv)
 
-mape = np.mean(np.abs((y_test_inv - pred_inv) / y_test_inv)) * 100
+# 🔥 ANTI DIVISION BY ZERO
+mape = np.mean(
+    np.abs((y_test_inv - pred_inv) / np.maximum(y_test_inv, 1))
+) * 100
 
-print("📉 MAE:", mae)
-print("📊 MAPE:", mape, "%")
+print("📉 MAE:", round(mae, 2))
+print("📊 MAPE:", round(mape, 2), "%")
 
 # ===== PLOT =====
 plt.figure()
@@ -91,6 +104,7 @@ plt.plot(y_test_inv, label="Actual")
 plt.plot(pred_inv, label="Predicted")
 plt.legend()
 plt.title("Actual vs Predicted")
+plt.tight_layout()
 plt.savefig("prediksi.png")
 plt.close()
 
