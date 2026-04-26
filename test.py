@@ -5,7 +5,7 @@ url = "https://deteksi-kwh-production.up.railway.app/data"
 data = {
     "voltage": 220,
     "current": 3,
-    "power": 700,   # > 500
+    "power": 700,
     "kwh": 1,
     "biaya": 1500
 }

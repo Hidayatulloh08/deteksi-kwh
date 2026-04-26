@@ -13,8 +13,13 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Dropout
 
 # ===== LOAD DATA =====
-df = pd.read_csv("data_dummy.csv")
+df_dummy = pd.read_csv("data_dummy.csv")
 
+try:
+    df_real = pd.read_csv("data.csv", on_bad_lines='skip')
+    df = pd.concat([df_dummy, df_real])
+except:
+    df = df_dummy
 # ===== VALIDASI KOLOM =====
 if 'biaya' not in df.columns:
     raise Exception("Kolom 'biaya' tidak ditemukan di CSV")
