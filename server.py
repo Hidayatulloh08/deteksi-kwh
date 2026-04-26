@@ -5,15 +5,13 @@ from datetime import datetime
 import requests
 import time
 import numpy as np
-from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
-import matplotlib
-matplotlib.use('Agg')  # ✅ FIX
-import matplotlib.pyplot as plt
 import joblib
 
 app = Flask(__name__)
 FILE = "data.csv"
+
+print("🔥 SERVER RUNNING 🔥")
 
 # ===== TELEGRAM =====
 TOKEN = os.environ.get("TOKEN", "").strip()
@@ -28,17 +26,19 @@ BUDGET = 350000
 model = None
 scaler = None
 
+# ⚠️ SAFE LOAD (tidak bikin crash)
 try:
+    from tensorflow.keras.models import load_model
     model = load_model(MODEL_PATH)
     print("✅ Model LSTM loaded")
 except Exception as e:
-    print("⚠️ Model error:", e)
+    print("⚠️ Model disabled:", e)
 
 try:
     scaler = joblib.load("scaler.save")
     print("✅ Scaler loaded")
 except Exception as e:
-    print("⚠️ Scaler error:", e)
+    print("⚠️ Scaler disabled:", e)
 
 # ===== GLOBAL =====
 last_notif_time = 0
@@ -79,8 +79,7 @@ def kirim_notif(pesan):
         url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
         requests.post(url, json={
             "chat_id": CHAT_ID,
-            "text": pesan,
-            "parse_mode": "HTML"
+            "text": pesan
         }, timeout=10)
     except Exception as e:
         print("❌ ERROR TELEGRAM:", e)
@@ -90,6 +89,7 @@ def kirim_notif(pesan):
 # =========================
 def prediksi_besok(df):
     try:
+        # ⚠️ jika model tidak ada → skip
         if model is None or scaler is None or len(df) < WINDOW:
             return None
 
@@ -97,7 +97,7 @@ def prediksi_besok(df):
             return None
 
         data = df[['biaya']].values
-        scaled = scaler.transform(data)  # ✅ FIX (tidak fit ulang)
+        scaled = scaler.transform(data)
 
         last = scaled[-WINDOW:]
         X = np.array([last[:, 0]]).reshape((1, WINDOW, 1))
@@ -134,7 +134,7 @@ def get_data():
 # =========================
 @app.route('/data', methods=['POST'])
 def receive_data():
-    global last_notif_time, last_status
+    global last_notif_time
 
     try:
         data = request.get_json()
@@ -152,6 +152,7 @@ def receive_data():
 
         prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 and 'power' in df_old.columns else power
 
+        # ===== THRESHOLD =====
         if len(df_old) > 10 and 'power' in df_old.columns:
             mean_power = df_old['power'].mean()
             std_power = df_old['power'].std()
@@ -159,6 +160,7 @@ def receive_data():
         else:
             threshold = 500
 
+        # ===== STATUS =====
         status = "NORMAL"
 
         if power > threshold:
@@ -168,6 +170,7 @@ def receive_data():
         elif abs(power - prev_power) > 200:
             status = "SPIKE"
 
+        # ===== AI =====
         prediksi_ai = prediksi_besok(df_old)
 
         mae, mape = 0, 0
@@ -176,11 +179,7 @@ def receive_data():
             mae = error
             mape = (error / biaya) * 100
 
-        columns = [
-            "timestamp","day","hour","voltage","current","power","kwh","biaya",
-            "status","threshold","prediksi_ai","mae","mape"
-        ]
-
+        # ===== SAVE =====
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "day": now.day,
@@ -197,7 +196,7 @@ def receive_data():
             "mape": mape
         }
 
-        df_new = pd.DataFrame([row])[columns]
+        df_new = pd.DataFrame([row])
 
         df_new.to_csv(
             FILE,
@@ -206,8 +205,8 @@ def receive_data():
             index=False
         )
 
+        # ===== NOTIF =====
         now_time = time.time()
-
         if now_time - last_notif_time > 300:
             kirim_notif(f"⚡ {power}W | {status}")
             last_notif_time = now_time
