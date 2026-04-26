@@ -7,58 +7,97 @@ import time
 import numpy as np
 from tensorflow.keras.models import load_model
 from sklearn.preprocessing import MinMaxScaler
+import matplotlib
+matplotlib.use('Agg')  # ✅ FIX
+import matplotlib.pyplot as plt
+import joblib
 
 app = Flask(__name__)
 FILE = "data.csv"
 
-# ===== TELEGRAM CONFIG =====
+# ===== TELEGRAM =====
 TOKEN = os.environ.get("TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 
 # ===== AI CONFIG =====
 MODEL_PATH = "model_lstm.keras"
 WINDOW = 7
+BUDGET = 350000
 
+# ===== LOAD MODEL & SCALER =====
 model = None
-scaler = MinMaxScaler()
+scaler = None
 
 try:
     model = load_model(MODEL_PATH)
     print("✅ Model LSTM loaded")
 except Exception as e:
-    print("⚠️ Model tidak ditemukan:", e)
+    print("⚠️ Model error:", e)
+
+try:
+    scaler = joblib.load("scaler.save")
+    print("✅ Scaler loaded")
+except Exception as e:
+    print("⚠️ Scaler error:", e)
 
 # ===== GLOBAL =====
 last_notif_time = 0
-last_power_state = None  # 🔥 untuk deteksi ON/OFF
+last_status = {"high": False, "off": False, "spike": False}
 
-# ===== TELEGRAM =====
+# =========================
+# 🔧 SAFE FLOAT
+# =========================
+def to_float(x):
+    try:
+        return float(str(x).replace(",", "."))
+    except:
+        return 0.0
+
+# =========================
+# 🔥 SAFE CSV LOADER
+# =========================
+def load_csv_safe():
+    if not os.path.exists(FILE):
+        return pd.DataFrame()
+
+    try:
+        return pd.read_csv(FILE, on_bad_lines='skip')
+    except Exception as e:
+        print("🔥 CSV RUSAK → RESET:", e)
+        os.remove(FILE)
+        return pd.DataFrame()
+
+# =========================
+# 🔔 TELEGRAM
+# =========================
 def kirim_notif(pesan):
     if not TOKEN or not CHAT_ID:
         print("❌ TOKEN kosong")
         return
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-
     try:
-        res = requests.post(url, json={
+        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+        requests.post(url, json={
             "chat_id": CHAT_ID,
             "text": pesan,
             "parse_mode": "HTML"
         }, timeout=10)
-
-        print("📩 TELEGRAM:", res.status_code)
     except Exception as e:
         print("❌ ERROR TELEGRAM:", e)
 
-# ===== AI =====
+# =========================
+# 🤖 AI PREDIKSI
+# =========================
 def prediksi_besok(df):
-    if model is None or len(df) < WINDOW:
-        return None
-
     try:
+        if model is None or scaler is None or len(df) < WINDOW:
+            return None
+
+        if 'biaya' not in df.columns:
+            return None
+
         data = df[['biaya']].values
-        scaled = scaler.fit_transform(data)
+        scaled = scaler.transform(data)  # ✅ FIX (tidak fit ulang)
 
         last = scaled[-WINDOW:]
         X = np.array([last[:, 0]]).reshape((1, WINDOW, 1))
@@ -66,101 +105,82 @@ def prediksi_besok(df):
         pred = model.predict(X, verbose=0)
         hasil = scaler.inverse_transform(pred)
 
+        if np.isnan(hasil[0][0]) or np.isinf(hasil[0][0]):
+            return None
+
         return float(hasil[0][0])
+
     except Exception as e:
         print("❌ ERROR AI:", e)
         return None
 
-# ===== EVALUASI AI =====
-def hitung_error(df):
-    try:
-        if model is None or len(df) < WINDOW + 1:
-            return None, None
-
-        y_true = df['biaya'].values[WINDOW:]
-        y_pred = []
-
-        for i in range(WINDOW, len(df)):
-            window_data = df['biaya'].values[i-WINDOW:i]
-            scaled = scaler.fit_transform(window_data.reshape(-1,1))
-
-            X = np.array([scaled[:,0]]).reshape((1, WINDOW, 1))
-            pred = model.predict(X, verbose=0)
-            hasil = scaler.inverse_transform(pred)
-
-            y_pred.append(hasil[0][0])
-
-        y_true = np.array(y_true)
-        y_pred = np.array(y_pred)
-
-        mae = np.mean(np.abs(y_true - y_pred))
-        mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
-
-        return float(mae), float(mape)
-
-    except Exception as e:
-        print("❌ ERROR EVALUASI:", e)
-        return None, None
-
-# ===== ROOT =====
+# =========================
+# ROOT
+# =========================
 @app.route('/')
 def home():
     return "API AKTIF"
 
-# ===== DATA MASUK =====
+# =========================
+# GET DATA
+# =========================
+@app.route('/get-data')
+def get_data():
+    df = load_csv_safe()
+    return df.tail(50).to_json(orient='records')
+
+# =========================
+# 🚀 MAIN API
+# =========================
 @app.route('/data', methods=['POST'])
 def receive_data():
-    global last_notif_time, last_power_state
+    global last_notif_time, last_status
 
     try:
         data = request.get_json()
         if not data:
             return jsonify({"error": "No JSON"}), 400
 
-        print("\n=== DATA MASUK ===")
-        print(data)
-
-        # ===== PARSE =====
-        voltage = float(data.get('voltage', 0))
-        current = float(data.get('current', 0))
-        power = float(data.get('power', 0))
-        kwh = float(data.get('kwh', 0))
-        biaya = float(data.get('biaya', 0))
+        voltage = to_float(data.get('voltage'))
+        current = to_float(data.get('current'))
+        power = to_float(data.get('power'))
+        kwh = to_float(data.get('kwh'))
+        biaya = to_float(data.get('biaya'))
 
         now = datetime.now()
+        df_old = load_csv_safe()
 
-        # ===== DETEKSI ON/OFF =====
-        current_state = "ON" if power > 1 else "OFF"
+        prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 and 'power' in df_old.columns else power
 
-        if last_power_state is not None:
-            if last_power_state == "ON" and current_state == "OFF":
-                kirim_notif("⚫ Listrik mati!")
+        if len(df_old) > 10 and 'power' in df_old.columns:
+            mean_power = df_old['power'].mean()
+            std_power = df_old['power'].std()
+            threshold = mean_power + (2 * std_power)
+        else:
+            threshold = 500
 
-            elif last_power_state == "OFF" and current_state == "ON":
-                kirim_notif("🟢 Listrik menyala kembali!")
+        status = "NORMAL"
 
-        last_power_state = current_state
-
-        # ===== DETEKSI EVENT =====
-        event = "NORMAL"
-
-        if power > 500:
-            event = "HIGH_LOAD"
-
+        if power > threshold:
+            status = "HIGH_LOAD_ADAPTIVE"
         elif power <= 1:
-            event = "POWER_OFF"
+            status = "POWER_OFF"
+        elif abs(power - prev_power) > 200:
+            status = "SPIKE"
 
-        # SPIKE
-        if os.path.exists(FILE):
-            df_old = pd.read_csv(FILE)
-            if len(df_old) > 2:
-                prev = df_old['power'].iloc[-1]
-                if abs(power - prev) > 200:
-                    event = "SPIKE"
+        prediksi_ai = prediksi_besok(df_old)
 
-        print("EVENT:", event)
+        mae, mape = 0, 0
+        if prediksi_ai is not None and biaya != 0:
+            error = abs(biaya - prediksi_ai)
+            mae = error
+            mape = (error / biaya) * 100
 
-        # ===== SAVE =====
+        columns = [
+            "timestamp","day","hour","voltage","current","power","kwh","biaya",
+            "status","threshold","prediksi_ai","mae","mape"
+        ]
+
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "day": now.day,
@@ -170,64 +190,32 @@ def receive_data():
             "power": power,
             "kwh": kwh,
             "biaya": biaya,
-            "event": event
+            "status": status,
+            "threshold": threshold,
+            "prediksi_ai": prediksi_ai if prediksi_ai else 0,
+            "mae": mae,
+            "mape": mape
         }
 
-        df_new = pd.DataFrame([row])
+        df_new = pd.DataFrame([row])[columns]
 
-        if not os.path.exists(FILE):
-            df_new.to_csv(FILE, index=False)
-        else:
-            df_new.to_csv(FILE, mode='a', header=False, index=False)
+        df_new.to_csv(
+            FILE,
+            mode='a',
+            header=not os.path.exists(FILE),
+            index=False
+        )
 
-        df = pd.read_csv(FILE)
+        now_time = time.time()
 
-        # ===== ANALISIS =====
-        total = df['biaya'].sum()
-        rata = df['biaya'].mean()
-        pred_bulanan = rata * 30
-
-        # ===== AI =====
-        prediksi_ai = prediksi_besok(df)
-
-        # ===== EVALUASI =====
-        mae, mape = hitung_error(df)
-
-        # ===== NOTIF EVENT =====
-        if event == "HIGH_LOAD":
-            kirim_notif("🔴 HIGH LOAD terdeteksi!")
-
-        elif event == "SPIKE":
-            kirim_notif("⚠️ LONJAKAN DAYA!")
-
-        # ===== TIMER =====
-        current_time = time.time()
-
-        if current_time - last_notif_time > 30:
-            pesan = f"""
-<b>⚡ MONITORING LISTRIK</b>
-
-💡 Power: {power} W
-💰 Total: Rp {int(total)}
-📈 Bulanan: Rp {int(pred_bulanan)}
-📊 Event: {event}
-"""
-
-            if prediksi_ai:
-                pesan += f"\n🤖 Prediksi: Rp {int(prediksi_ai)}"
-
-            if mae and mape:
-                pesan += f"\n📉 MAE: {int(mae)} | MAPE: {round(mape,2)}%"
-
-            kirim_notif(pesan)
-            last_notif_time = current_time
+        if now_time - last_notif_time > 300:
+            kirim_notif(f"⚡ {power}W | {status}")
+            last_notif_time = now_time
 
         return jsonify({
             "status": "ok",
-            "event": event,
-            "power_state": current_state,
-            "total": int(total),
-            "prediksi_ai": int(prediksi_ai) if prediksi_ai else 0,
+            "event": status,
+            "threshold": threshold,
             "mae": mae,
             "mape": mape
         })
@@ -236,7 +224,10 @@ def receive_data():
         print("🔥 ERROR:", e)
         return jsonify({"error": str(e)}), 500
 
-# ===== RUN =====
+
+# =========================
+# RUN
+# =========================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
