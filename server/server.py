@@ -14,6 +14,7 @@ from config import THRESHOLD_DEFAULT, NOTIF_INTERVAL
 
 app = Flask(__name__)
 FILE = "data/data.csv"
+ANOMALI_FILE = "data/anomali_log.csv"
 
 # ===== INIT =====
 last_notif_time = 0
@@ -48,7 +49,7 @@ def receive_data():
         now = datetime.now()
         df_old = load_csv_safe(FILE)
 
-        # ===== THRESHOLD =====
+        # ===== THRESHOLD ADAPTIF =====
         if len(df_old) > 10 and 'power' in df_old.columns:
             mean = df_old['power'].mean()
             std = df_old['power'].std()
@@ -58,15 +59,21 @@ def receive_data():
 
         prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 else power
 
-        # ===== STATUS =====
+        # ===== STATUS + LABEL =====
         status = "NORMAL"
+        label = "NORMAL"
 
-        if power > threshold:
-            status = "HIGH_LOAD"
-        elif power <= 1:
+        if power <= 1:
             status = "POWER_OFF"
+            label = "OFF"
+
+        elif power > threshold:
+            status = "HIGH_LOAD"
+            label = "BOROS"
+
         elif abs(power - prev_power) > 200:
             status = "SPIKE"
+            label = "ANOMALI"
 
         # ===== POLA LANJUTAN =====
         if len(df_old) > 5:
@@ -75,9 +82,11 @@ def receive_data():
 
             if spike_count >= 3:
                 status = "REPEATED_SPIKE"
+                label = "ANOMALI"
 
             if now.hour <= 4 and power > 50:
                 status = "ABNORMAL_NIGHT_USAGE"
+                label = "ANOMALI"
 
         # ===== ANALISIS =====
         if len(df_old) > 0 and 'biaya' in df_old.columns:
@@ -118,7 +127,7 @@ def receive_data():
 
         status_biaya = "HEMAT ✅" if pred_bulanan < 300000 else "BOROS ⚠️"
 
-        # ===== SAVE =====
+        # ===== SAVE DATA =====
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "voltage": voltage,
@@ -126,7 +135,8 @@ def receive_data():
             "power": power,
             "kwh": kwh,
             "biaya": biaya,
-            "status": status
+            "status": status,
+            "label": label
         }
 
         pd.DataFrame([row]).to_csv(
@@ -136,22 +146,38 @@ def receive_data():
             index=False
         )
 
-        # ===== NOTIF =====
+        # ===== LOG ANOMALI =====
+        if label == "ANOMALI":
+            log = {
+                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "power": power,
+                "status": status
+            }
+
+            pd.DataFrame([log]).to_csv(
+                ANOMALI_FILE,
+                mode='a',
+                header=not os.path.exists(ANOMALI_FILE),
+                index=False
+            )
+
+        # ===== FORMAT NOTIF =====
         pesan = (
             f"⚡ MONITORING LISTRIK\n\n"
             f"🔌 {round(voltage,1)} V\n"
             f"⚡ {round(current,2)} A\n"
             f"💡 {round(power,1)} W\n\n"
+            f"📊 Status: {label}\n"
             f"💰 Total: Rp {int(total)}\n"
             f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
             f"📊 Trend: {trend}\n\n"
             f"⏰ Jam boros: {jam_boros}\n"
             f"📅 Hari boros: {hari_boros}\n\n"
             f"🤖 Prediksi besok: Rp {int(prediksi_ai)}\n\n"
-            f"📌 Status: {status}\n"
             f"💡 Kondisi: {status_biaya}"
         )
 
+        # ===== NOTIF SYSTEM =====
         now_time = time.time()
 
         if last_power_state is None:
@@ -167,17 +193,48 @@ def receive_data():
         if status != last_status:
             kirim_notif(pesan)
             last_status = status
+
         elif now_time - last_notif_time > NOTIF_INTERVAL:
             kirim_notif(pesan)
             last_notif_time = now_time
 
-        return jsonify({"status": "ok", "event": status})
+        return jsonify({
+            "status": "ok",
+            "event": status,
+            "label": label
+        })
 
     except Exception as e:
         print("ERROR:", e)
         return jsonify({"error": str(e)}), 500
 
 
+# ===== API GRAFIK =====
+@app.route('/grafik', methods=['GET'])
+def grafik():
+    if not os.path.exists(FILE):
+        return jsonify([])
+
+    df = pd.read_csv(FILE).tail(100)
+
+    return jsonify({
+        "timestamp": df['timestamp'].tolist(),
+        "power": df['power'].tolist(),
+        "biaya": df['biaya'].tolist()
+    })
+
+
+# ===== API ANOMALI =====
+@app.route('/anomali', methods=['GET'])
+def anomali():
+    if not os.path.exists(ANOMALI_FILE):
+        return jsonify([])
+
+    df = pd.read_csv(ANOMALI_FILE).tail(50)
+    return df.to_json(orient='records')
+
+
+# ===== RUN =====
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
