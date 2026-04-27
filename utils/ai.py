@@ -9,7 +9,7 @@ model = None
 scaler = None
 
 # =========================
-# PATH (ANTI ERROR RAILWAY)
+# PATH (AMAN UNTUK RAILWAY)
 # =========================
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 
@@ -17,7 +17,7 @@ MODEL_PATH = os.path.join(BASE_DIR, "model", "model_lstm.keras")
 SCALER_PATH = os.path.join(BASE_DIR, "model", "scaler.save")
 
 # =========================
-# LOAD AI
+# LOAD AI (AMAN)
 # =========================
 def load_ai():
     global model, scaler
@@ -25,43 +25,62 @@ def load_ai():
     try:
         from tensorflow.keras.models import load_model
 
-        print("📁 BASE DIR:", BASE_DIR)
-        print("📁 MODEL PATH:", MODEL_PATH)
-        print("📁 SCALER PATH:", SCALER_PATH)
+        print("📁 BASE:", BASE_DIR)
 
-        # cek file
         if not os.path.exists(MODEL_PATH):
-            print("❌ MODEL TIDAK DITEMUKAN")
+            print("❌ MODEL TIDAK ADA")
             return
 
         if not os.path.exists(SCALER_PATH):
-            print("❌ SCALER TIDAK DITEMUKAN")
+            print("❌ SCALER TIDAK ADA")
             return
 
         model = load_model(MODEL_PATH)
         scaler = joblib.load(SCALER_PATH)
 
-        print("✅ AI BERHASIL DI-LOAD")
+        print("✅ AI BERHASIL LOAD")
 
     except Exception as e:
         print("⚠️ AI OFF:", e)
 
 
 # =========================
-# PREDIKSI
+# FALLBACK (ANTI ERROR)
+# =========================
+def fallback_prediksi(df):
+    try:
+        if 'biaya' not in df.columns or len(df) == 0:
+            return 0
+
+        rata = df['biaya'].mean()
+
+        # sedikit "AI rasa"
+        if len(df) > 3:
+            last = df['biaya'].tail(3).values
+            trend = (last[-1] - last[0]) / 3
+            return float(rata + trend)
+
+        return float(rata)
+
+    except:
+        return 0
+
+
+# =========================
+# PREDIKSI UTAMA
 # =========================
 def prediksi_besok(df, window=7):
     try:
-        # cek AI
-        if model is None or scaler is None:
-            return None
-
-        # cek data cukup
-        if len(df) < window:
-            return None
-
+        # ===== VALIDASI =====
         if 'biaya' not in df.columns:
-            return None
+            return fallback_prediksi(df)
+
+        if len(df) < window:
+            return fallback_prediksi(df)
+
+        # ===== JIKA AI TIDAK ADA =====
+        if model is None or scaler is None:
+            return fallback_prediksi(df)
 
         # ===== PREPROCESS =====
         data = df[['biaya']].values
@@ -70,18 +89,25 @@ def prediksi_besok(df, window=7):
         last = scaled[-window:]
         X = np.array([last[:, 0]]).reshape((1, window, 1))
 
-        # ===== PREDICT =====
+        # ===== PREDIKSI =====
         pred = model.predict(X, verbose=0)
         hasil = scaler.inverse_transform(pred)
 
         value = float(hasil[0][0])
 
-        # ===== VALIDASI =====
+        # ===== VALIDASI OUTPUT =====
         if np.isnan(value) or np.isinf(value):
-            return None
+            return fallback_prediksi(df)
+
+        # clamp biar ga aneh
+        if value < 0:
+            value = 0
+
+        if value > 1_000_000:
+            value = fallback_prediksi(df)
 
         return value
 
     except Exception as e:
-        print("❌ ERROR PREDIKSI:", e)
-        return None
+        print("❌ ERROR AI:", e)
+        return fallback_prediksi(df)
