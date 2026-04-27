@@ -59,21 +59,15 @@ def receive_data():
 
         prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 else power
 
-        # ===== STATUS + LABEL =====
+        # ===== STATUS =====
         status = "NORMAL"
-        label = "NORMAL"
 
         if power <= 1:
             status = "POWER_OFF"
-            label = "OFF"
-
         elif power > threshold:
             status = "HIGH_LOAD"
-            label = "BOROS"
-
         elif abs(power - prev_power) > 200:
             status = "SPIKE"
-            label = "ANOMALI"
 
         # ===== POLA LANJUTAN =====
         if len(df_old) > 5:
@@ -82,11 +76,17 @@ def receive_data():
 
             if spike_count >= 3:
                 status = "REPEATED_SPIKE"
-                label = "ANOMALI"
 
             if now.hour <= 4 and power > 50:
                 status = "ABNORMAL_NIGHT_USAGE"
-                label = "ANOMALI"
+
+        # ===== LEVEL SISTEM (FIX UTAMA 🔥) =====
+        level = "🟢 NORMAL"
+
+        if status in ["HIGH_LOAD", "SPIKE", "REPEATED_SPIKE", "ABNORMAL_NIGHT_USAGE"]:
+            level = "🔴 ANOMALI"
+        elif power > threshold * 0.7:
+            level = "🟡 BOROS"
 
         # ===== ANALISIS =====
         if len(df_old) > 0 and 'biaya' in df_old.columns:
@@ -107,7 +107,7 @@ def receive_data():
             elif last5[-1] < last5[0]:
                 trend = "TURUN 📉"
 
-        # ===== BOROS =====
+        # ===== BOROS TIME =====
         jam_boros, hari_boros = 0, 0
         if len(df_old) > 0 and 'timestamp' in df_old.columns:
             df_old['timestamp'] = pd.to_datetime(df_old['timestamp'], errors='coerce')
@@ -117,15 +117,24 @@ def receive_data():
             boros = df_old[df_old['power'] > threshold]
 
             if not boros.empty:
-                jam_boros = int(boros['hour'].mode()[0])
-                hari_boros = int(boros['day'].mode()[0])
+                jam_mode = boros['hour'].mode()
+                hari_mode = boros['day'].mode()
+
+                jam_boros = int(jam_mode.iloc[0]) if not jam_mode.empty else 0
+                hari_boros = int(hari_mode.iloc[0]) if not hari_mode.empty else 0
 
         # ===== AI =====
         prediksi_ai = prediksi_besok(df_old)
         if prediksi_ai is None:
             prediksi_ai = rata
 
-        status_biaya = "HEMAT ✅" if pred_bulanan < 300000 else "BOROS ⚠️"
+        # ===== REKOMENDASI =====
+        if level == "🔴 ANOMALI":
+            rekomendasi = "Periksa alat listrik ⚠️"
+        elif level == "🟡 BOROS":
+            rekomendasi = "Kurangi beban listrik"
+        else:
+            rekomendasi = "Penggunaan normal"
 
         # ===== SAVE DATA =====
         row = {
@@ -136,7 +145,7 @@ def receive_data():
             "kwh": kwh,
             "biaya": biaya,
             "status": status,
-            "label": label
+            "level": level
         }
 
         pd.DataFrame([row]).to_csv(
@@ -147,34 +156,38 @@ def receive_data():
         )
 
         # ===== LOG ANOMALI =====
-        if label == "ANOMALI":
-            log = {
-                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+        if level == "🔴 ANOMALI":
+            pd.DataFrame([{
+                "timestamp": row["timestamp"],
                 "power": power,
                 "status": status
-            }
-
-            pd.DataFrame([log]).to_csv(
+            }]).to_csv(
                 ANOMALI_FILE,
                 mode='a',
                 header=not os.path.exists(ANOMALI_FILE),
                 index=False
             )
 
-        # ===== FORMAT NOTIF =====
+        # ===== NOTIF FINAL 🔥 =====
         pesan = (
             f"⚡ MONITORING LISTRIK\n\n"
             f"🔌 {round(voltage,1)} V\n"
             f"⚡ {round(current,2)} A\n"
             f"💡 {round(power,1)} W\n\n"
-            f"📊 Status: {label}\n"
+
+            f"🚦 Level: {level}\n"
+            f"📊 Status: {status}\n\n"
+
             f"💰 Total: Rp {int(total)}\n"
             f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
             f"📊 Trend: {trend}\n\n"
+
             f"⏰ Jam boros: {jam_boros}\n"
             f"📅 Hari boros: {hari_boros}\n\n"
+
             f"🤖 Prediksi besok: Rp {int(prediksi_ai)}\n\n"
-            f"💡 Kondisi: {status_biaya}"
+
+            f"💡 Rekomendasi: {rekomendasi}"
         )
 
         # ===== NOTIF SYSTEM =====
@@ -201,7 +214,7 @@ def receive_data():
         return jsonify({
             "status": "ok",
             "event": status,
-            "label": label
+            "level": level
         })
 
     except Exception as e:
