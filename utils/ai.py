@@ -120,9 +120,11 @@ def prediksi_besok(df, window=7):
         # ===== predict
         pred = model.predict(X, verbose=0)
 
-        # ⚠️ FIX: ambil hanya kolom biaya (kolom pertama)
-        pred_biaya = pred[0][0]
-
+        # handle berbagai bentuk output
+        if len(pred.shape) == 3:
+            pred_biaya = pred[0][0][0]
+        else:
+            pred_biaya = pred[0][0]
         # inverse scaling khusus biaya
         dummy = np.zeros((1, 3))
         dummy[0][0] = pred_biaya
@@ -161,6 +163,26 @@ def hitung_error(df):
         mae = np.mean(np.abs(real - pred))
 
         return int(mae)
+
+    except:
+        return 0
+# =========================
+# ERROR METRIC TAMBAHAN (MAPE)
+# =========================
+def hitung_mape(df):
+    try:
+        if len(df) < 10 or 'biaya' not in df.columns:
+            return 0
+
+        real = df['biaya'].tail(5).values
+        pred = np.mean(df['biaya'].iloc[-10:-5])
+
+        # hindari division by zero
+        real = np.where(real == 0, 1, real)
+
+        mape = np.mean(np.abs((real - pred) / real)) * 100
+
+        return round(mape, 2)
 
     except:
         return 0
