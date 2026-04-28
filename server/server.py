@@ -4,6 +4,7 @@ import pandas as pd
 import time
 import os
 import sys
+import numpy as np
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -16,6 +17,7 @@ app = Flask(__name__)
 
 FILE = "data/data.csv"
 ANOMALI_FILE = "data/anomali_log.csv"
+ERROR_FILE = "data/error_log.csv"
 
 # ===== INIT =====
 last_notif_time = 0
@@ -24,6 +26,44 @@ last_status = None
 
 # LOAD AI
 load_ai()
+
+
+# =========================
+# 🔥 MAE
+# =========================
+def hitung_mae(df):
+    try:
+        if len(df) < 5 or 'biaya' not in df.columns:
+            return 0
+
+        real = df['biaya'].values
+        pred = df['biaya'].shift(1).bfill().values
+
+        mae = np.mean(np.abs(real - pred))
+        return int(mae)
+
+    except:
+        return 0
+
+
+# =========================
+# 🔥 MAPE (WAJIB PUBLIKASI)
+# =========================
+def hitung_mape(df):
+    try:
+        if len(df) < 5 or 'biaya' not in df.columns:
+            return 0
+
+        real = df['biaya'].values
+        pred = df['biaya'].shift(1).bfill().values
+
+        real = np.where(real == 0, 1, real)
+
+        mape = np.mean(np.abs((real - pred) / real)) * 100
+        return round(mape, 2)
+
+    except:
+        return 0
 
 
 @app.route('/')
@@ -50,7 +90,7 @@ def receive_data():
         now = datetime.now()
         df_old = load_csv_safe(FILE)
 
-        # ===== THRESHOLD ADAPTIF =====
+        # ===== THRESHOLD =====
         if len(df_old) > 10 and 'power' in df_old.columns:
             mean = df_old['power'].mean()
             std = df_old['power'].std()
@@ -60,7 +100,7 @@ def receive_data():
 
         prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 else power
 
-        # ===== STATUS + LABEL =====
+        # ===== STATUS =====
         status = "NORMAL"
         label = "NORMAL"
 
@@ -108,7 +148,7 @@ def receive_data():
             elif last5[-1] < last5[0]:
                 trend = "TURUN 📉"
 
-        # ===== POLA (HABIT) =====
+        # ===== POLA =====
         habit = "Normal"
         jam_boros, hari_boros = 0, 0
 
@@ -129,30 +169,31 @@ def receive_data():
                     habit = "Jam sibuk 🔥"
 
         # ===== AI =====
-        prediksi_ai = prediksi_besok(df_old)
+        prediksi_ai, conf_ai = prediksi_besok(df_old)
+
         if prediksi_ai is None:
             prediksi_ai = rata
+            conf_ai = 0.5
 
-        # ===== CONFIDENCE =====
-        confidence = 0
-        if len(df_old) > 10:
-            std_biaya = df_old['biaya'].std()
-            confidence = max(0, 100 - int(std_biaya))
+        # ===== ERROR =====
+        mae = hitung_mae(df_old)
+        mape = hitung_mape(df_old)
+
+        # ===== CONFIDENCE FINAL =====
+        confidence = int(conf_ai * 100)
 
         # ===== STATUS BIAYA =====
         status_biaya = "HEMAT ✅" if pred_bulanan < 300000 else "BOROS ⚠️"
 
         # ===== REKOMENDASI =====
-        rekomendasi = "-"
-
         if label == "BOROS":
             rekomendasi = "Kurangi penggunaan alat daya besar"
         elif label == "ANOMALI":
-            rekomendasi = "Cek instalasi / kebocoran listrik"
-        elif label == "NORMAL":
+            rekomendasi = "Cek instalasi listrik"
+        else:
             rekomendasi = "Pemakaian stabil"
 
-        # ===== SAVE DATA =====
+        # ===== SAVE =====
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "voltage": voltage,
@@ -165,28 +206,24 @@ def receive_data():
         }
 
         pd.DataFrame([row]).to_csv(
-            FILE,
-            mode='a',
+            FILE, mode='a',
             header=not os.path.exists(FILE),
             index=False
         )
 
-        # ===== LOG ANOMALI =====
-        if label == "ANOMALI":
-            log = {
-                "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-                "power": power,
-                "status": status
-            }
+        # ===== LOG ERROR =====
+        pd.DataFrame([{
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "mae": mae,
+            "mape": mape
+        }]).to_csv(
+            ERROR_FILE,
+            mode='a',
+            header=not os.path.exists(ERROR_FILE),
+            index=False
+        )
 
-            pd.DataFrame([log]).to_csv(
-                ANOMALI_FILE,
-                mode='a',
-                header=not os.path.exists(ANOMALI_FILE),
-                index=False
-            )
-
-        # ===== FORMAT NOTIF =====
+        # ===== NOTIF =====
         pesan = (
             f"⚡ MONITORING LISTRIK\n\n"
             f"🔌 {round(voltage,1)} V\n"
@@ -199,13 +236,15 @@ def receive_data():
             f"⏰ Jam boros: {jam_boros}\n"
             f"📅 Hari boros: {hari_boros}\n"
             f"📊 Pola: {habit}\n\n"
-            f"🤖 Prediksi besok: Rp {int(prediksi_ai)}\n"
+            f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
+            f"📉 MAE: {mae}\n"
+            f"📊 MAPE: {mape}%\n"
             f"📊 Confidence: {confidence}%\n\n"
-            f"💡 Kondisi: {status_biaya}\n"
-            f"🧠 Rekomendasi: {rekomendasi}"
+            f"💡 {status_biaya}\n"
+            f"🧠 {rekomendasi}"
         )
 
-        # ===== NOTIF SYSTEM =====
+        # ===== NOTIF CONTROL =====
         now_time = time.time()
 
         if last_power_state is None:
@@ -221,64 +260,18 @@ def receive_data():
         if status != last_status:
             kirim_notif(pesan)
             last_status = status
-
         elif now_time - last_notif_time > NOTIF_INTERVAL:
             kirim_notif(pesan)
             last_notif_time = now_time
 
         return jsonify({
             "status": "ok",
-            "event": status,
-            "label": label
+            "label": label,
+            "mae": mae,
+            "mape": mape,
+            "confidence": confidence
         })
 
     except Exception as e:
         print("ERROR:", e)
         return jsonify({"error": str(e)}), 500
-
-
-# ===== API GRAFIK =====
-@app.route('/grafik', methods=['GET'])
-def grafik():
-    if not os.path.exists(FILE):
-        return jsonify([])
-
-    df = pd.read_csv(FILE).tail(100)
-
-    return jsonify({
-        "timestamp": df['timestamp'].tolist(),
-        "power": df['power'].tolist(),
-        "biaya": df['biaya'].tolist()
-    })
-
-
-# ===== API ANOMALI =====
-@app.route('/anomali', methods=['GET'])
-def anomali():
-    if not os.path.exists(ANOMALI_FILE):
-        return jsonify([])
-
-    df = pd.read_csv(ANOMALI_FILE).tail(50)
-    return df.to_json(orient='records')
-
-
-# ===== API SUMMARY =====
-@app.route('/summary', methods=['GET'])
-def summary():
-    df = load_csv_safe(FILE)
-
-    if len(df) == 0:
-        return jsonify({})
-
-    return jsonify({
-        "total": int(df['biaya'].sum()),
-        "rata": int(df['biaya'].mean()),
-        "max_power": float(df['power'].max()),
-        "min_power": float(df['power'].min())
-    })
-
-
-# ===== RUN =====
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
