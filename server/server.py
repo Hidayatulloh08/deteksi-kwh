@@ -44,6 +44,9 @@ def ensure_csv():
 
 ensure_csv()
 
+if not os.path.exists(STATE_FILE):
+    with open(STATE_FILE, "w") as f:
+        f.write("0")
 # =========================
 # STATE LISTRIK (PERSIST)
 # =========================
@@ -139,8 +142,12 @@ def receive_data():
         # =========================
         # 🔥 DETEKSI ON/OFF (FIX TOTAL)
         # =========================
-        is_on = (power > 5 and current > 0.05)
-        print("DEBUG ON/OFF:", voltage, "->", is_on)
+        is_on = not (voltage < 50 or power < 1)
+        print("DEBUG STATUS:",
+            "V=", voltage,
+            "P=", power,
+            "C=", current,
+            "=> ON" if is_on else "OFF")
 
         last_state = load_last_state()
 
