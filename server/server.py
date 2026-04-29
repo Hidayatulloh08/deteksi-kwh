@@ -58,10 +58,8 @@ def hitung_mae(df):
     try:
         if len(df) < 5:
             return 0
-
         real = df["biaya"].values
         pred = df["biaya"].shift(1).bfill().values
-
         return int(np.mean(np.abs(real - pred)))
     except:
         return 0
@@ -71,12 +69,9 @@ def hitung_mape(df):
     try:
         if len(df) < 5:
             return 0
-
         real = df["biaya"].values
         pred = df["biaya"].shift(1).bfill().values
-
         real = np.where(real == 0, 1, real)
-
         return round(np.mean(np.abs((real - pred) / real)) * 100, 2)
     except:
         return 0
@@ -92,9 +87,7 @@ def home():
 # =========================
 @app.route("/data", methods=["POST"])
 def receive_data():
-    global last_notif_time
-    global last_power_state
-    global last_status
+    global last_notif_time, last_power_state, last_status
 
     try:
         ensure_csv()
@@ -115,9 +108,7 @@ def receive_data():
 
         # ===== FIX KOLOM =====
         if df_old.empty:
-            df_old = pd.DataFrame(columns=[
-                "timestamp", "power", "biaya"
-            ])
+            df_old = pd.DataFrame(columns=["timestamp", "power", "biaya"])
 
         if "power" not in df_old.columns:
             df_old["power"] = 0
@@ -125,33 +116,16 @@ def receive_data():
         if "biaya" not in df_old.columns:
             df_old["biaya"] = 0
 
-        # ===== FIX TIME FEATURE =====
+        # ===== TIME FEATURE =====
         if "timestamp" in df_old.columns:
-            df_old["timestamp"] = pd.to_datetime(
-                df_old["timestamp"], errors="coerce"
-            )
+            df_old["timestamp"] = pd.to_datetime(df_old["timestamp"], errors="coerce")
             df_old["hour"] = df_old["timestamp"].dt.hour.fillna(0)
             df_old["day"] = df_old["timestamp"].dt.day.fillna(0)
-
-        # ===== ANTI SPAM LOW POWER =====
-        if power < 5:
-            return jsonify({"status": "skip low power"})
-
-        # ===== THRESHOLD =====
-        if len(df_old) > 10:
-            mean = df_old['power'].mean()
-            std = df_old['power'].std()
-            threshold = mean + 2 * std
-
-            if threshold < 100:
-                threshold = 100
-        else:
-            threshold = THRESHOLD_DEFAULT
 
         prev_power = df_old["power"].iloc[-1] if len(df_old) > 0 else power
 
         # =========================
-        # SMART ELECTRICAL PROTECTION
+        # 🔥 FIX PLN MATI (INI KUNCI MASALAHMU)
         # =========================
         if voltage < 50:
             label = "PLN_MATI"
@@ -193,8 +167,7 @@ def receive_data():
         # ===== AI =====
         try:
             prediksi_ai, conf_ai = prediksi_besok(df_old)
-        except Exception as e:
-            print("❌ ERROR AI:", e)
+        except:
             prediksi_ai = rata
             conf_ai = 0.5
 
@@ -216,14 +189,8 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
-        pd.DataFrame([{
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "mae": mae,
-            "mape": mape
-        }]).to_csv(ERROR_FILE, mode="a", header=False, index=False)
-
         # =========================
-        # NOTIF
+        # 🔔 NOTIF (FIX TOTAL)
         # =========================
         if label == "KONSLETING":
             pesan = "🚨 BAHAYA KONSLETING!\nSegera cek instalasi listrik!"
@@ -251,7 +218,7 @@ def receive_data():
 
         now_time = time.time()
 
-        # ===== ON/OFF =====
+        # ===== ON/OFF DETECTION =====
         if last_power_state is None:
             last_power_state = power > 1
 
