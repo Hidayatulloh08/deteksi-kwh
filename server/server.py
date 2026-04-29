@@ -125,7 +125,7 @@ def receive_data():
         if "biaya" not in df_old.columns:
             df_old["biaya"] = 0
 
-        # ===== FIX TIME FEATURE (🔥 SOLUSI ERROR AI) =====
+        # ===== FIX TIME FEATURE =====
         if "timestamp" in df_old.columns:
             df_old["timestamp"] = pd.to_datetime(
                 df_old["timestamp"], errors="coerce"
@@ -137,7 +137,7 @@ def receive_data():
         if power < 5:
             return jsonify({"status": "skip low power"})
 
-        # ===== THRESHOLD DINAMIS =====
+        # ===== THRESHOLD =====
         if len(df_old) > 10:
             mean = df_old['power'].mean()
             std = df_old['power'].std()
@@ -148,30 +148,33 @@ def receive_data():
         else:
             threshold = THRESHOLD_DEFAULT
 
-        prev_power = (
-            df_old["power"].iloc[-1]
-            if len(df_old) > 0 else power
-        )
+        prev_power = df_old["power"].iloc[-1] if len(df_old) > 0 else power
 
         # =========================
-        # 🔥 HYBRID DETECTION
+        # SMART ELECTRICAL PROTECTION
         # =========================
-        if power <= 1:
+        if voltage < 50:
+            label = "PLN_MATI"
+
+        elif power <= 1:
             label = "OFF"
 
-        elif power > threshold:
+        elif power > 800 and abs(power - prev_power) > 300:
+            label = "KONSLETING"
+
+        elif voltage < 180 and power > 50:
+            label = "VOLTAGE_DROP"
+
+        elif power > 300:
             label = "BOROS"
 
-        elif power > threshold * 0.7:
+        elif power > 100:
             label = "WASPADA"
-
-        elif abs(power - prev_power) > 200:
-            label = "ANOMALI"
 
         else:
             label = "NORMAL"
 
-        status = label  # 🔥 FIX NOTIF BUG
+        status = label
 
         # ===== ANALISIS =====
         total = biaya if len(df_old) == 0 else df_old["biaya"].sum()
@@ -199,7 +202,7 @@ def receive_data():
         mape = hitung_mape(df_old)
         confidence = int(conf_ai * 100)
 
-        # ===== SAVE DATA =====
+        # ===== SAVE =====
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "voltage": voltage,
@@ -211,40 +214,44 @@ def receive_data():
             "label": label
         }
 
-        pd.DataFrame([row]).to_csv(
-            FILE, mode="a", header=False, index=False
-        )
+        pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
         pd.DataFrame([{
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "mae": mae,
             "mape": mape
-        }]).to_csv(
-            ERROR_FILE, mode="a", header=False, index=False
-        )
+        }]).to_csv(ERROR_FILE, mode="a", header=False, index=False)
 
         # =========================
-        # 🔔 NOTIF TELEGRAM
+        # NOTIF
         # =========================
-        pesan = (
-            f"⚡ MONITORING LISTRIK\n\n"
-            f"🔌 {round(voltage,1)} V\n"
-            f"⚡ {round(current,2)} A\n"
-            f"💡 {round(power,1)} W\n\n"
-            f"📊 Status: {label}\n"
-            f"💰 Total: Rp {int(total)}\n"
-            f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
-            f"📊 Trend: {trend}\n\n"
-            f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
-            f"📉 MAE: {mae}\n"
-            f"📊 MAPE: {mape}%\n"
-            f"🎯 Confidence: {confidence}%\n\n"
-            f"💡 {'Kurangi beban listrik besar' if label=='BOROS' else 'Pemakaian aman'}"
-        )
+        if label == "KONSLETING":
+            pesan = "🚨 BAHAYA KONSLETING!\nSegera cek instalasi listrik!"
+
+        elif label == "PLN_MATI":
+            pesan = "⚫ PLN MATI!\nTidak ada tegangan terdeteksi"
+
+        elif label == "VOLTAGE_DROP":
+            pesan = "⚠️ Tegangan turun!\nBerbahaya untuk perangkat elektronik"
+
+        else:
+            pesan = (
+                f"⚡ MONITORING LISTRIK\n\n"
+                f"🔌 {round(voltage,1)} V\n"
+                f"⚡ {round(current,2)} A\n"
+                f"💡 {round(power,1)} W\n\n"
+                f"📊 Status: {label}\n"
+                f"💰 Total: Rp {int(total)}\n"
+                f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
+                f"📊 Trend: {trend}\n\n"
+                f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
+                f"📊 Confidence: {confidence}%\n\n"
+                f"💡 {'Kurangi beban listrik besar' if label=='BOROS' else 'Pemakaian aman'}"
+            )
 
         now_time = time.time()
 
-        # ===== DETEKSI ON/OFF =====
+        # ===== ON/OFF =====
         if last_power_state is None:
             last_power_state = power > 1
 
@@ -256,7 +263,7 @@ def receive_data():
 
         last_power_state = power > 1
 
-        # ===== SMART NOTIF =====
+        # ===== NOTIF CONTROL =====
         if status != last_status:
             kirim_notif(pesan)
             last_status = status
@@ -279,8 +286,5 @@ def receive_data():
         return jsonify({"error": str(e)}), 500
 
 
-# =========================
-# RUN
-# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
