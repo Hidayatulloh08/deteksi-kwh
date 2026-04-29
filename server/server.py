@@ -5,6 +5,7 @@ import time
 import os
 import sys
 import numpy as np
+import threading
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -23,9 +24,10 @@ STATE_FILE = "data/state.txt"
 # ===== GLOBAL =====
 last_notif_time = 0
 last_status = None
+last_data_time = time.time()
 
 load_ai()
-
+threading.Thread(target=cek_listrik_mati, daemon=True).start()
 # =========================
 # FILE SETUP
 # =========================
@@ -111,6 +113,8 @@ def receive_data():
         data = request.get_json()
         if not data:
             return jsonify({"error":"No JSON"}),400
+            global last_data_time
+            last_data_time = time.time()
         print("DEBUG JSON:", data)
         voltage = to_float(data.get("voltage", 0))
         current = to_float(data.get("current", 0))
@@ -267,6 +271,19 @@ def receive_data():
         print("❌ ERROR:", e)
         return jsonify({"error":str(e)}),500
 
+def cek_listrik_mati():
+    global last_data_time
 
+    while True:
+        now = time.time()
+
+        if now - last_data_time > 10:
+            print("⚠️ TIDAK ADA DATA → ANGGAP MATI")
+
+            kirim_notif("⚫ PLN MATI (NO DATA)")
+
+            last_data_time = now
+
+        time.sleep(5)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
