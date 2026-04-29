@@ -12,6 +12,7 @@ from utils.helper import to_float, load_csv_safe
 from utils.notifier import kirim_notif
 from utils.ai import prediksi_besok, load_ai
 from config import THRESHOLD_DEFAULT, NOTIF_INTERVAL
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -117,9 +118,10 @@ def receive_data():
         kwh     = to_float(data.get("kwh", 0))
         biaya   = to_float(data.get("biaya", 0))
 
-        now = datetime.now()
+        now = datetime.utcnow() + timedelta(hours=7)
+        waktu = now.strftime("%d-%m-%Y %H:%M:%S")
         now_time = time.time()
-
+                
         df_old = load_csv_safe(FILE)
 
 # pastikan kolom tidak hilang (FIX ERROR 'power')
@@ -129,14 +131,6 @@ def receive_data():
 
         if df_old.empty:
             df_old = pd.DataFrame(columns=["power","biaya"])
-        # 🔥 DETEKSI ON/OFF (FIX FINAL + STABIL)
-
-        # ambil rata-rata 3 data terakhir biar gak noise
-        recent_power = df_old["power"].tail(3).mean() if len(df_old) >= 3 else power
-
-        is_on = recent_power > 5
-
-        print("DEBUG ON/OFF:", voltage, power, "AVG:", recent_power, "->", is_on)
 
         last_state = load_last_state()
         # =========================
@@ -236,6 +230,7 @@ def receive_data():
         else:
             pesan = (
                 f"⚡ MONITORING LISTRIK\n\n"
+                f"🕒 {waktu}\n\n"
                 f"🔌 {round(voltage,1)} V\n"
                 f"⚡ {round(current,2)} A\n"
                 f"💡 {round(power,1)} W\n\n"
@@ -243,6 +238,7 @@ def receive_data():
                 f"💰 Total: Rp {int(total)}\n"
                 f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
                 f"📊 Trend: {trend}\n\n"
+                f"💡 Pemakaian aman\n\n"
                 f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
                 f"📊 Confidence: {confidence}%"
             )
