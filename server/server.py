@@ -107,17 +107,22 @@ def receive_data():
         data = request.get_json()
         if not data:
             return jsonify({"error":"No JSON"}),400
-
-        voltage = to_float(data.get("voltage"))
-        current = to_float(data.get("current"))
-        power   = to_float(data.get("power"))
-        kwh     = to_float(data.get("kwh"))
-        biaya   = to_float(data.get("biaya"))
+        print("DEBUG JSON:", data)
+        voltage = to_float(data.get("voltage", 0))
+        current = to_float(data.get("current", 0))
+        power   = to_float(data.get("power", 0))
+        kwh     = to_float(data.get("kwh", 0))
+        biaya   = to_float(data.get("biaya", 0))
 
         now = datetime.now()
         now_time = time.time()
 
         df_old = load_csv_safe(FILE)
+
+# pastikan kolom tidak hilang (FIX ERROR 'power')
+        for col in ["power", "biaya"]:
+            if col not in df_old.columns:
+                df_old[col] = 0
 
         if df_old.empty:
             df_old = pd.DataFrame(columns=["power","biaya"])
