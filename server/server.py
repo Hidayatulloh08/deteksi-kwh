@@ -17,37 +17,51 @@ app = Flask(__name__)
 
 FILE = "data/data.csv"
 ERROR_FILE = "data/error_log.csv"
+STATE_FILE = "data/state.txt"
 
 # ===== GLOBAL =====
 last_notif_time = 0
-last_power_state = None
 last_status = None
 
-# ===== LOAD AI =====
 load_ai()
 
-
 # =========================
-# AUTO CREATE CSV
+# FILE SETUP
 # =========================
 def ensure_csv():
     os.makedirs("data", exist_ok=True)
 
     if not os.path.exists(FILE):
         pd.DataFrame(columns=[
-            "timestamp", "voltage", "current",
-            "power", "kwh", "biaya",
-            "status", "label"
+            "timestamp","voltage","current",
+            "power","kwh","biaya","status","label"
         ]).to_csv(FILE, index=False)
 
     if not os.path.exists(ERROR_FILE):
         pd.DataFrame(columns=[
-            "timestamp", "mae", "mape"
+            "timestamp","mae","mape"
         ]).to_csv(ERROR_FILE, index=False)
-
 
 ensure_csv()
 
+# =========================
+# STATE LISTRIK (PERSIST)
+# =========================
+def load_last_state():
+    try:
+        if not os.path.exists(STATE_FILE):
+            return None
+        with open(STATE_FILE, "r") as f:
+            return f.read().strip() == "1"
+    except:
+        return None
+
+def save_last_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            f.write("1" if state else "0")
+    except:
+        pass
 
 # =========================
 # METRIC
@@ -62,7 +76,6 @@ def hitung_mae(df):
     except:
         return 0
 
-
 def hitung_mape(df):
     try:
         if len(df) < 5:
@@ -70,38 +83,36 @@ def hitung_mape(df):
         real = df["biaya"].values
         pred = df["biaya"].shift(1).bfill().values
         real = np.where(real == 0, 1, real)
-        return round(np.mean(np.abs((real - pred) / real)) * 100, 2)
+        return round(np.mean(np.abs((real - pred)/real))*100, 2)
     except:
         return 0
 
-
+# =========================
+# ROUTE
+# =========================
 @app.route("/")
 def home():
     return "API AKTIF 🚀"
 
-
 # =========================
-# API DATA
+# API
 # =========================
 @app.route("/data", methods=["POST"])
 def receive_data():
-    global last_notif_time
-    global last_power_state
-    global last_status
+    global last_notif_time, last_status
 
     try:
         ensure_csv()
 
         data = request.get_json()
         if not data:
-            return jsonify({"error": "No JSON"}), 400
+            return jsonify({"error":"No JSON"}),400
 
-        # ===== AMBIL DATA =====
         voltage = to_float(data.get("voltage"))
         current = to_float(data.get("current"))
-        power = to_float(data.get("power"))
-        kwh = to_float(data.get("kwh"))
-        biaya = to_float(data.get("biaya"))
+        power   = to_float(data.get("power"))
+        kwh     = to_float(data.get("kwh"))
+        biaya   = to_float(data.get("biaya"))
 
         now = datetime.now()
         now_time = time.time()
@@ -109,66 +120,42 @@ def receive_data():
         df_old = load_csv_safe(FILE)
 
         if df_old.empty:
-            df_old = pd.DataFrame(columns=["timestamp", "power", "biaya"])
-
-        if "power" not in df_old.columns:
-            df_old["power"] = 0
-
-        if "biaya" not in df_old.columns:
-            df_old["biaya"] = 0
+            df_old = pd.DataFrame(columns=["power","biaya"])
 
         # =========================
-        # 🔥 DETEKSI LISTRIK ON/OFF (FIX)
+        # 🔥 DETEKSI ON/OFF (FIX TOTAL)
         # =========================
-        i# =========================
-# 🔥 DETEKSI ON/OFF (PERSIST FIX)
-# =========================
-        is_on = voltage > 100
-        # 🔍 DEBUG (taruh di sini)
+        is_on = voltage > 120
         print("DEBUG ON/OFF:", voltage, "->", is_on)
 
         last_state = load_last_state()
 
-        # pertama kali
         if last_state is None:
             save_last_state(is_on)
 
-        else:
-            if is_on and not last_state:
+        elif is_on != last_state:
+            if is_on:
                 kirim_notif("⚡ Listrik MENYALA")
-
-            elif not is_on and last_state:
-                kirim_notif("⚫ Listrik MATI")
+            else:
+                kirim_notif("⚫ PLN MATI")
 
             save_last_state(is_on)
 
         # =========================
-        # ANTI SPAM (PINDAH KE SINI)
-        # =========================
-        if power < 5 and voltage < 100:
-            return jsonify({"status": "skip low power"})
-
-        # =========================
-        # PROTECTION LOGIC
+        # PROTECTION
         # =========================
         if voltage < 50:
             label = "PLN_MATI"
-
         elif power <= 1:
             label = "OFF"
-
-        elif power > 800 and len(df_old) > 0 and abs(power - df_old["power"].iloc[-1]) > 300:
+        elif power > 800 and len(df_old)>0 and abs(power-df_old["power"].iloc[-1])>300:
             label = "KONSLETING"
-
         elif voltage < 180 and power > 50:
             label = "VOLTAGE_DROP"
-
         elif power > 300:
             label = "BOROS"
-
         elif power > 100:
             label = "WASPADA"
-
         else:
             label = "NORMAL"
 
@@ -177,17 +164,15 @@ def receive_data():
         # =========================
         # ANALISIS
         # =========================
-        total = biaya if len(df_old) == 0 else df_old["biaya"].sum()
-        rata = biaya if len(df_old) == 0 else df_old["biaya"].mean()
+        total = biaya if len(df_old)==0 else df_old["biaya"].sum()
+        rata  = biaya if len(df_old)==0 else df_old["biaya"].mean()
         pred_bulanan = rata * 30
 
         trend = "STABIL"
-        if len(df_old) > 5:
+        if len(df_old)>5:
             last5 = df_old["biaya"].tail(5).values
-            if last5[-1] > last5[0]:
-                trend = "NAIK 📈"
-            elif last5[-1] < last5[0]:
-                trend = "TURUN 📉"
+            if last5[-1] > last5[0]: trend="NAIK 📈"
+            elif last5[-1] < last5[0]: trend="TURUN 📉"
 
         # =========================
         # AI
@@ -200,7 +185,7 @@ def receive_data():
 
         mae = hitung_mae(df_old)
         mape = hitung_mape(df_old)
-        confidence = int(conf_ai * 100)
+        confidence = int(conf_ai*100)
 
         # =========================
         # SAVE
@@ -218,24 +203,15 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
-        pd.DataFrame([{
-            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
-            "mae": mae,
-            "mape": mape
-        }]).to_csv(ERROR_FILE, mode="a", header=False, index=False)
-
         # =========================
-        # NOTIF
+        # PESAN
         # =========================
         if label == "KONSLETING":
-            pesan = "🚨 BAHAYA KONSLETING!\nSegera cek instalasi listrik!"
-
+            pesan = "🚨 BAHAYA KONSLETING!"
         elif label == "PLN_MATI":
-            pesan = "⚫ PLN MATI!\nTidak ada tegangan terdeteksi"
-
+            pesan = "⚫ PLN MATI!"
         elif label == "VOLTAGE_DROP":
-            pesan = "⚠️ Tegangan turun!\nBerbahaya untuk perangkat elektronik"
-
+            pesan = "⚠️ Tegangan turun!"
         else:
             pesan = (
                 f"⚡ MONITORING LISTRIK\n\n"
@@ -247,12 +223,11 @@ def receive_data():
                 f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
                 f"📊 Trend: {trend}\n\n"
                 f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
-                f"📊 Confidence: {confidence}%\n\n"
-                f"💡 {'Kurangi beban listrik besar' if label=='BOROS' else 'Pemakaian aman'}"
+                f"📊 Confidence: {confidence}%"
             )
 
         # =========================
-        # SMART NOTIF
+        # NOTIF SMART
         # =========================
         if status != last_status:
             kirim_notif(pesan)
@@ -264,16 +239,16 @@ def receive_data():
             last_notif_time = now_time
 
         return jsonify({
-            "status": "ok",
-            "label": label,
-            "mae": mae,
-            "mape": mape,
-            "confidence": confidence
+            "status":"ok",
+            "label":label,
+            "mae":mae,
+            "mape":mape,
+            "confidence":confidence
         })
 
     except Exception as e:
         print("❌ ERROR:", e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error":str(e)}),500
 
 
 if __name__ == "__main__":
