@@ -124,6 +124,8 @@ def receive_data():
 # 🔥 DETEKSI ON/OFF (PERSIST FIX)
 # =========================
         is_on = voltage > 100
+        # 🔍 DEBUG (taruh di sini)
+        print("DEBUG ON/OFF:", voltage, "->", is_on)
 
         last_state = load_last_state()
 
