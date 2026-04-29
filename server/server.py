@@ -18,33 +18,33 @@ app = Flask(__name__)
 FILE = "data/data.csv"
 ERROR_FILE = "data/error_log.csv"
 
-# ===== INIT =====
+# ===== GLOBAL =====
 last_notif_time = 0
 last_power_state = None
 last_status = None
 
-# LOAD AI
+# ===== LOAD AI =====
 load_ai()
 
 
 # =========================
-# AUTO CREATE CSV (🔥 PENTING)
+# AUTO CREATE CSV
 # =========================
 def ensure_csv():
     os.makedirs("data", exist_ok=True)
 
     if not os.path.exists(FILE):
-        df = pd.DataFrame(columns=[
+        pd.DataFrame(columns=[
             "timestamp", "voltage", "current",
             "power", "kwh", "biaya",
             "status", "label"
-        ])
-        df.to_csv(FILE, index=False)
+        ]).to_csv(FILE, index=False)
         print("✅ data.csv dibuat")
 
     if not os.path.exists(ERROR_FILE):
-        df = pd.DataFrame(columns=["timestamp", "mae", "mape"])
-        df.to_csv(ERROR_FILE, index=False)
+        pd.DataFrame(columns=[
+            "timestamp", "mae", "mape"
+        ]).to_csv(ERROR_FILE, index=False)
         print("✅ error_log.csv dibuat")
 
 
@@ -52,31 +52,28 @@ ensure_csv()
 
 
 # =========================
-# MAE
+# METRIC
 # =========================
 def hitung_mae(df):
     try:
-        if len(df) < 5 or 'biaya' not in df.columns:
+        if len(df) < 5:
             return 0
 
-        real = df['biaya'].values
-        pred = df['biaya'].shift(1).bfill().values
+        real = df["biaya"].values
+        pred = df["biaya"].shift(1).bfill().values
 
         return int(np.mean(np.abs(real - pred)))
     except:
         return 0
 
 
-# =========================
-# MAPE
-# =========================
 def hitung_mape(df):
     try:
-        if len(df) < 5 or 'biaya' not in df.columns:
+        if len(df) < 5:
             return 0
 
-        real = df['biaya'].values
-        pred = df['biaya'].shift(1).bfill().values
+        real = df["biaya"].values
+        pred = df["biaya"].shift(1).bfill().values
 
         real = np.where(real == 0, 1, real)
 
@@ -85,95 +82,119 @@ def hitung_mape(df):
         return 0
 
 
-# =========================
-# ROOT
-# =========================
-@app.route('/')
+@app.route("/")
 def home():
-    return "API AKTIF"
+    return "API AKTIF 🚀"
 
 
 # =========================
 # API DATA
 # =========================
-@app.route('/data', methods=['POST'])
+@app.route("/data", methods=["POST"])
 def receive_data():
-    global last_notif_time, last_power_state, last_status
+    global last_notif_time
+    global last_power_state
+    global last_status
 
     try:
+        ensure_csv()
+
         data = request.get_json()
         if not data:
             return jsonify({"error": "No JSON"}), 400
 
-        ensure_csv()
-
         # ===== AMBIL DATA =====
-        voltage = to_float(data.get('voltage'))
-        current = to_float(data.get('current'))
-        power = to_float(data.get('power'))
-        kwh = to_float(data.get('kwh'))
-        biaya = to_float(data.get('biaya'))
+        voltage = to_float(data.get("voltage"))
+        current = to_float(data.get("current"))
+        power = to_float(data.get("power"))
+        kwh = to_float(data.get("kwh"))
+        biaya = to_float(data.get("biaya"))
 
         now = datetime.now()
         df_old = load_csv_safe(FILE)
 
-        # 🔥 FIX ERROR 'power'
-        if 'power' not in df_old.columns:
-            df_old['power'] = 0
+        # ===== FIX KOLOM =====
+        if df_old.empty:
+            df_old = pd.DataFrame(columns=[
+                "timestamp", "power", "biaya"
+            ])
 
-        if 'biaya' not in df_old.columns:
-            df_old['biaya'] = 0
+        if "power" not in df_old.columns:
+            df_old["power"] = 0
 
-        # ===== THRESHOLD =====
+        if "biaya" not in df_old.columns:
+            df_old["biaya"] = 0
+
+        # ===== FIX TIME FEATURE (🔥 SOLUSI ERROR AI) =====
+        if "timestamp" in df_old.columns:
+            df_old["timestamp"] = pd.to_datetime(
+                df_old["timestamp"], errors="coerce"
+            )
+            df_old["hour"] = df_old["timestamp"].dt.hour.fillna(0)
+            df_old["day"] = df_old["timestamp"].dt.day.fillna(0)
+
+        # ===== ANTI SPAM LOW POWER =====
+        if power < 5:
+            return jsonify({"status": "skip low power"})
+
+        # ===== THRESHOLD DINAMIS =====
         if len(df_old) > 10:
             mean = df_old['power'].mean()
             std = df_old['power'].std()
             threshold = mean + 2 * std
+
+            if threshold < 100:
+                threshold = 100
         else:
             threshold = THRESHOLD_DEFAULT
 
-        prev_power = df_old['power'].iloc[-1] if len(df_old) > 0 else power
+        prev_power = (
+            df_old["power"].iloc[-1]
+            if len(df_old) > 0 else power
+        )
 
-        # ===== STATUS =====
-        status = "NORMAL"
-        label = "NORMAL"
-
+        # =========================
+        # 🔥 HYBRID DETECTION
+        # =========================
         if power <= 1:
-            status = "POWER_OFF"
             label = "OFF"
 
         elif power > threshold:
-            status = "HIGH_LOAD"
             label = "BOROS"
 
+        elif power > threshold * 0.7:
+            label = "WASPADA"
+
         elif abs(power - prev_power) > 200:
-            status = "SPIKE"
             label = "ANOMALI"
 
+        else:
+            label = "NORMAL"
+
+        status = label  # 🔥 FIX NOTIF BUG
+
         # ===== ANALISIS =====
-        total = df_old['biaya'].sum() if len(df_old) > 0 else biaya
-        rata = df_old['biaya'].mean() if len(df_old) > 0 else biaya
+        total = biaya if len(df_old) == 0 else df_old["biaya"].sum()
+        rata = biaya if len(df_old) == 0 else df_old["biaya"].mean()
         pred_bulanan = rata * 30
 
         # ===== TREND =====
         trend = "STABIL"
         if len(df_old) > 5:
-            last5 = df_old['biaya'].tail(5).values
+            last5 = df_old["biaya"].tail(5).values
             if last5[-1] > last5[0]:
                 trend = "NAIK 📈"
             elif last5[-1] < last5[0]:
                 trend = "TURUN 📉"
 
         # ===== AI =====
-        hasil_ai = prediksi_besok(df_old)
-
-        if hasil_ai:
-            prediksi_ai, conf_ai = hasil_ai
-        else:
+        try:
+            prediksi_ai, conf_ai = prediksi_besok(df_old)
+        except Exception as e:
+            print("❌ ERROR AI:", e)
             prediksi_ai = rata
             conf_ai = 0.5
 
-        # ===== ERROR =====
         mae = hitung_mae(df_old)
         mape = hitung_mape(df_old)
         confidence = int(conf_ai * 100)
@@ -190,16 +211,21 @@ def receive_data():
             "label": label
         }
 
-        pd.DataFrame([row]).to_csv(FILE, mode='a', header=False, index=False)
+        pd.DataFrame([row]).to_csv(
+            FILE, mode="a", header=False, index=False
+        )
 
-        # ===== LOG ERROR =====
         pd.DataFrame([{
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
             "mae": mae,
             "mape": mape
-        }]).to_csv(ERROR_FILE, mode='a', header=False, index=False)
+        }]).to_csv(
+            ERROR_FILE, mode="a", header=False, index=False
+        )
 
-        # ===== PESAN NOTIF (🔥 LENGKAP)
+        # =========================
+        # 🔔 NOTIF TELEGRAM
+        # =========================
         pesan = (
             f"⚡ MONITORING LISTRIK\n\n"
             f"🔌 {round(voltage,1)} V\n"
@@ -212,7 +238,8 @@ def receive_data():
             f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
             f"📉 MAE: {mae}\n"
             f"📊 MAPE: {mape}%\n"
-            f"📊 Confidence: {confidence}%\n"
+            f"🎯 Confidence: {confidence}%\n\n"
+            f"💡 {'Kurangi beban listrik besar' if label=='BOROS' else 'Pemakaian aman'}"
         )
 
         now_time = time.time()
@@ -223,15 +250,18 @@ def receive_data():
 
         if power > 1 and last_power_state is False:
             kirim_notif("⚡ Listrik MENYALA")
+
         elif power <= 1 and last_power_state is True:
             kirim_notif("⚫ Listrik MATI")
 
         last_power_state = power > 1
 
-        # ===== NOTIF CONTROL =====
+        # ===== SMART NOTIF =====
         if status != last_status:
             kirim_notif(pesan)
             last_status = status
+            last_notif_time = now_time
+
         elif now_time - last_notif_time > NOTIF_INTERVAL:
             kirim_notif(pesan)
             last_notif_time = now_time
@@ -245,5 +275,12 @@ def receive_data():
         })
 
     except Exception as e:
-        print("ERROR:", e)
+        print("❌ ERROR:", e)
         return jsonify({"error": str(e)}), 500
+
+
+# =========================
+# RUN
+# =========================
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8080)
