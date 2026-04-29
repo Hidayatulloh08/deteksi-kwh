@@ -23,38 +23,8 @@ last_notif_time = 0
 last_power_state = None
 last_status = None
 
-# 🔥 TAMBAHAN
-state_start_time = None
-
 # ===== LOAD AI =====
 load_ai()
-
-
-# =========================
-# FORMAT DURASI (🔥 BARU)
-# =========================
-def format_durasi(seconds):
-    seconds = int(seconds)
-
-    if seconds < 60:
-        return f"{seconds} detik"
-
-    minutes = seconds // 60
-    seconds = seconds % 60
-
-    if minutes < 60:
-        return f"{minutes} menit {seconds} detik"
-
-    hours = minutes // 60
-    minutes = minutes % 60
-
-    if hours < 24:
-        return f"{hours} jam {minutes} menit"
-
-    days = hours // 24
-    hours = hours % 24
-
-    return f"{days} hari {hours} jam"
 
 
 # =========================
@@ -86,10 +56,8 @@ def hitung_mae(df):
     try:
         if len(df) < 5:
             return 0
-
         real = df["biaya"].values
         pred = df["biaya"].shift(1).bfill().values
-
         return int(np.mean(np.abs(real - pred)))
     except:
         return 0
@@ -99,12 +67,9 @@ def hitung_mape(df):
     try:
         if len(df) < 5:
             return 0
-
         real = df["biaya"].values
         pred = df["biaya"].shift(1).bfill().values
-
         real = np.where(real == 0, 1, real)
-
         return round(np.mean(np.abs((real - pred) / real)) * 100, 2)
     except:
         return 0
@@ -120,7 +85,9 @@ def home():
 # =========================
 @app.route("/data", methods=["POST"])
 def receive_data():
-    global last_notif_time, last_power_state, last_status, state_start_time
+    global last_notif_time
+    global last_power_state
+    global last_status
 
     try:
         ensure_csv()
@@ -129,6 +96,7 @@ def receive_data():
         if not data:
             return jsonify({"error": "No JSON"}), 400
 
+        # ===== AMBIL DATA =====
         voltage = to_float(data.get("voltage"))
         current = to_float(data.get("current"))
         power = to_float(data.get("power"))
@@ -150,44 +118,59 @@ def receive_data():
             df_old["biaya"] = 0
 
         # =========================
-        # 🔥 DETEKSI STATUS
+        # 🔥 DETEKSI LISTRIK ON/OFF (FIX)
+        # =========================
+        i# =========================
+# 🔥 DETEKSI ON/OFF (PERSIST FIX)
+# =========================
+        is_on = voltage > 100
+
+        last_state = load_last_state()
+
+        # pertama kali
+        if last_state is None:
+            save_last_state(is_on)
+
+        else:
+            if is_on and not last_state:
+                kirim_notif("⚡ Listrik MENYALA")
+
+            elif not is_on and last_state:
+                kirim_notif("⚫ Listrik MATI")
+
+            save_last_state(is_on)
+
+        # =========================
+        # ANTI SPAM (PINDAH KE SINI)
+        # =========================
+        if power < 5 and voltage < 100:
+            return jsonify({"status": "skip low power"})
+
+        # =========================
+        # PROTECTION LOGIC
         # =========================
         if voltage < 50:
             label = "PLN_MATI"
+
         elif power <= 1:
             label = "OFF"
-        elif power > 800:
+
+        elif power > 800 and len(df_old) > 0 and abs(power - df_old["power"].iloc[-1]) > 300:
             label = "KONSLETING"
+
+        elif voltage < 180 and power > 50:
+            label = "VOLTAGE_DROP"
+
         elif power > 300:
             label = "BOROS"
+
         elif power > 100:
             label = "WASPADA"
+
         else:
             label = "NORMAL"
 
         status = label
-
-        # =========================
-        # 🔥 DETEKSI ON/OFF + DURASI
-        # =========================
-        current_state = (power > 5) and (voltage > 100)
-
-        if last_power_state is None:
-            last_power_state = current_state
-            state_start_time = now_time
-
-        else:
-            if current_state != last_power_state:
-
-                durasi = format_durasi(now_time - state_start_time)
-
-                if current_state:
-                    kirim_notif(f"⚡ Listrik MENYALA\n⏱️ Mati selama: {durasi}")
-                else:
-                    kirim_notif(f"⚫ Listrik MATI\n⏱️ Menyala selama: {durasi}")
-
-                state_start_time = now_time
-                last_power_state = current_state
 
         # =========================
         # ANALISIS
@@ -204,6 +187,9 @@ def receive_data():
             elif last5[-1] < last5[0]:
                 trend = "TURUN 📉"
 
+        # =========================
+        # AI
+        # =========================
         try:
             prediksi_ai, conf_ai = prediksi_besok(df_old)
         except:
@@ -215,7 +201,7 @@ def receive_data():
         confidence = int(conf_ai * 100)
 
         # =========================
-        # SAVE DATA
+        # SAVE
         # =========================
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -230,22 +216,42 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
-        # =========================
-        # NOTIF UTAMA
-        # =========================
-        pesan = (
-            f"⚡ MONITORING LISTRIK\n\n"
-            f"🔌 {round(voltage,1)} V\n"
-            f"⚡ {round(current,2)} A\n"
-            f"💡 {round(power,1)} W\n\n"
-            f"📊 Status: {label}\n"
-            f"💰 Total: Rp {int(total)}\n"
-            f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
-            f"📊 Trend: {trend}\n\n"
-            f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
-            f"📊 Confidence: {confidence}%"
-        )
+        pd.DataFrame([{
+            "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
+            "mae": mae,
+            "mape": mape
+        }]).to_csv(ERROR_FILE, mode="a", header=False, index=False)
 
+        # =========================
+        # NOTIF
+        # =========================
+        if label == "KONSLETING":
+            pesan = "🚨 BAHAYA KONSLETING!\nSegera cek instalasi listrik!"
+
+        elif label == "PLN_MATI":
+            pesan = "⚫ PLN MATI!\nTidak ada tegangan terdeteksi"
+
+        elif label == "VOLTAGE_DROP":
+            pesan = "⚠️ Tegangan turun!\nBerbahaya untuk perangkat elektronik"
+
+        else:
+            pesan = (
+                f"⚡ MONITORING LISTRIK\n\n"
+                f"🔌 {round(voltage,1)} V\n"
+                f"⚡ {round(current,2)} A\n"
+                f"💡 {round(power,1)} W\n\n"
+                f"📊 Status: {label}\n"
+                f"💰 Total: Rp {int(total)}\n"
+                f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
+                f"📊 Trend: {trend}\n\n"
+                f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
+                f"📊 Confidence: {confidence}%\n\n"
+                f"💡 {'Kurangi beban listrik besar' if label=='BOROS' else 'Pemakaian aman'}"
+            )
+
+        # =========================
+        # SMART NOTIF
+        # =========================
         if status != last_status:
             kirim_notif(pesan)
             last_status = status
