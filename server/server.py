@@ -36,6 +36,7 @@ ERROR_FILE = "data/error_log.csv"
 # =========================
 SYSTEM_STATE = {
     "pln_on": True,
+    "last_pln_on": True,  # 🔥 FIX WAJIB
     "last_status": None,
     "last_notif_time": 0,
     "last_data_time": time.time(),
@@ -143,15 +144,19 @@ def receive_data():
         pln_mati = is_pln_mati(voltage)
         SYSTEM_STATE["pln_on"] = not pln_mati
 
+        # 🔥 DETEKSI PLN KEMBALI
+        pln_kembali = False
+        if SYSTEM_STATE["last_pln_on"] == False and SYSTEM_STATE["pln_on"] == True:
+            pln_kembali = True
+
+        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
+
         # =========================
         # LOAD ANALYSIS
         # =========================
         load_status = is_load_normal(power)
         load_type = classify_load(power)
 
-        # =========================
-        # LOAD DATA
-        # =========================
         df_old = load_csv_safe(FILE)
 
         if len(df_old) > 0:
@@ -166,7 +171,6 @@ def receive_data():
         else:
             power_mean = df_old["power"].mean()
             power_std = df_old["power"].std()
-
             voltage_mean = df_old["voltage"].mean()
             voltage_std = df_old["voltage"].std()
 
@@ -184,15 +188,15 @@ def receive_data():
         if pln_mati:
             label = "PLN_MATI"
 
-        # 🔥 TAMBAHKAN DI SINI (PALING ATAS SETELAH PLN)
         elif current > 8 and voltage < 120 and power > 100:
-            label = "KONSLETING"    
+            label = "KONSLETING"
 
         elif load_status == "NO_LOAD":
             label = "NO_LOAD"
 
         elif load_status == "OVERLOAD":
-            label = "OVERLOAD"  # 
+            label = "OVERLOAD"
+
         elif power_std > 0 and power > power_mean + 3 * power_std:
             label = "ANOMALY_SPIKE"
 
@@ -220,54 +224,21 @@ def receive_data():
             prediksi_ai = biaya
             conf_ai = 0.5
 
-        # 🔥 FUSION
         label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
         confidence = int(conf_ai * 100)
 
-        # 🔥 FILTER AI LEMAH (JANGAN ganggu konslet real)
+        # 🔥 FILTER AI
         if confidence < 60 and label == "CRITICAL_ANOMALY":
-            print("⚠️ Skip: confidence rendah")
             label = "NORMAL"
 
-        # 🔥 DEBUG DATA MASUK (setelah final)
+        # 🔥 DEBUG
         print("DATA MASUK:",
-            "V:", voltage,
-            "I:", current,
-            "P:", power,
-            "LABEL:", label,
-            "CONF:", confidence)
-        # =========================
-        # ANALYTICS (FIXED)
-        # =========================
-        if len(df_old) > 0:
-            today = datetime.now().date()
-            df_today = df_old[df_old["timestamp"].dt.date == today]
+              "V:", voltage,
+              "I:", current,
+              "P:", power,
+              "LABEL:", label,
+              "CONF:", confidence)
 
-            total = df_today["biaya"].sum()
-            rata = df_today["biaya"].mean() if len(df_today) > 0 else biaya
-        else:
-            total = biaya
-            rata = biaya
-
-        pred_bulanan = rata * 30
-
-        trend = "STABIL"
-        if len(df_old) > 5:
-            last5 = df_old["biaya"].tail(5).values
-            if last5[-1] > last5[0]:
-                trend = "NAIK 📈"
-            elif last5[-1] < last5[0]:
-                trend = "TURUN 📉"
-
-        mae = hitung_mae(df_old)
-        mape = hitung_mape(df_old)
-        confidence = int(conf_ai * 100)
-
-        # 🔥 FILTER AI LEMAH
-        # 🔥 FILTER AI LEMAH (JANGAN ganggu konslet real)
-        if confidence < 60 and label == "CRITICAL_ANOMALY":
-            print("⚠️ Skip: confidence rendah")
-            label = "NORMAL"
         # =========================
         # SAVE
         # =========================
@@ -285,65 +256,38 @@ def receive_data():
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
         # =========================
-        # AUTO RETRAIN (FIXED)
+        # MESSAGE
         # =========================
-        if len(df_old) > 50 and check_drift(df_old):
-            if time.time() - LAST_RETRAIN > 3600:
-                print("⚠️ DRIFT → RETRAIN")
-                retrain()
-                LAST_RETRAIN = time.time()
+        if pln_kembali and voltage > 180:
+            pesan = "✅ PLN MENYALA KEMBALI"
 
-        # =========================
-        # MESSAGE (FIXED)
-        # =========================
-        if label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY"]:
+        elif label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY"]:
             pesan = "🚨 BAHAYA KONSLETING!"
+
         elif label in ["PLN_MATI", "CRITICAL_OFF"]:
             pesan = "⚫ PLN MATI!"
-        elif label == "NO_LOAD":
-            pesan = "💤 Tidak ada beban listrik"
-        elif label == "VOLTAGE_DROP":
-            pesan = "⚠️ Tegangan turun!"
+
         else:
-            pesan = (
-                f"⚡ MONITORING LISTRIK\n\n"
-                f"🕒 {waktu}\n\n"
-                f"🔌 {voltage:.1f} V\n"
-                f"⚡ {current:.2f} A\n"
-                f"💡 {power:.1f} W\n\n"
-                f"📊 Status: {label}\n"
-                f"🔌 Beban: {load_type}\n"
-                f"💰 Total: Rp {int(total)}\n"
-                f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
-                f"📊 Trend: {trend}\n\n"
-                f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
-                f"📊 Confidence: {confidence}%"
-            )
+            pesan = f"⚡ Status: {label} | {voltage}V | {power}W"
 
         # =========================
-        # NOTIF (FIXED)
+        # NOTIF (FIX)
         # =========================
         now_time = time.time()
-
         is_critical = label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY", "CRITICAL_OFF"]
 
         if (
             (label != SYSTEM_STATE["last_status"] and is_critical) or
-            (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL and is_critical)
-            ):
-            try:
-                kirim_notif(pesan)
-            except Exception as e:
-                print("❌ TELEGRAM ERROR:", e)
-
+            (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL and is_critical) or
+            pln_kembali
+        ):
+            kirim_notif(pesan)
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
 
         return jsonify({
             "status": "ok",
             "label": label,
-            "mae": mae,
-            "mape": mape,
             "confidence": confidence
         })
 
@@ -364,7 +308,7 @@ def cek_listrik_mati():
                 kirim_notif("⚠️ SENSOR TIDAK MENGIRIM DATA")
 
                 if not SYSTEM_STATE["pln_on"]:
-                    kirim_notif("⚫ PLN MATI (NO DATA + VOLT 0)")
+                    kirim_notif("⚫ PLN MATI (NO DATA)")
 
                 SYSTEM_STATE["no_data_sent"] = True
         else:
