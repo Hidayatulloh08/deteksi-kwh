@@ -24,6 +24,7 @@ STATE_FILE = "data/state.txt"
 last_notif_time = 0
 last_status = None
 last_data_time = time.time()
+no_data_sent = False 
 
 load_ai()
 
@@ -137,7 +138,7 @@ def receive_data():
         if df_old.empty:
             df_old = pd.DataFrame(columns=["power","biaya"])
 
-        last_state = load_last_state()
+        
         # =========================
         # 🔥 DETEKSI ON/OFF (FIX TOTAL)
         # =========================
@@ -273,15 +274,25 @@ def receive_data():
         return jsonify({"error":str(e)}),500
 
 def cek_listrik_mati():
-    global last_data_time
+    global last_data_time, no_data_sent
 
     while True:
         now = time.time()
 
         if now - last_data_time > 10:
-            print("⚠️ TIDAK ADA DATA → ANGGAP MATI")
-            kirim_notif("⚫ PLN MATI (NO DATA)")
-            last_data_time = now
+            if not no_data_sent:
+                print("⚠️ TIDAK ADA DATA → ANGGAP MATI")
+
+                # ⬇️ TAMBAH INI
+                last_state = load_last_state()
+
+                if last_state is True:
+                    kirim_notif("⚫ PLN MATI (NO DATA)")
+                    save_last_state(False)
+
+                no_data_sent = True
+        else:
+            no_data_sent = False
 
         time.sleep(5)
 
