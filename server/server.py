@@ -7,12 +7,6 @@ import numpy as np
 import threading
 from datetime import datetime, timedelta
 
-# 🔥 TAMBAHAN SINTA 2
-from ml_pipeline.drift import check_drift, detect_anomaly
-from ml_pipeline.fusion import fusion_engine
-from ml_pipeline.load_classifier import classify_load
-from ml_pipeline.retrain import retrain
-
 # =========================
 # PATH SETUP
 # =========================
@@ -30,20 +24,20 @@ app = Flask(__name__)
 # =========================
 FILE = "data/data.csv"
 ERROR_FILE = "data/error_log.csv"
+STATE_FILE = "data/state.txt"
 
 # =========================
-# GLOBAL STATE
+# GLOBAL STATE (CENTRALIZED)
 # =========================
 SYSTEM_STATE = {
     "pln_on": True,
-    "last_pln_on": True,  # penting untuk deteksi transisi
     "last_status": None,
     "last_notif_time": 0,
     "last_data_time": time.time(),
     "no_data_sent": False
 }
 
-LAST_RETRAIN = 0
+lock = threading.Lock()
 
 load_ai()
 
@@ -65,17 +59,66 @@ def ensure_csv():
 ensure_csv()
 
 # =========================
+# STATE PERSISTENCE
+# =========================
+def load_last_state():
+    try:
+        if not os.path.exists(STATE_FILE):
+            return None
+        with open(STATE_FILE, "r") as f:
+            return f.read().strip() == "1"
+    except:
+        return None
+
+
+def save_last_state(state):
+    try:
+        with open(STATE_FILE, "w") as f:
+            f.write("1" if state else "0")
+    except:
+        pass
+
+
+# =========================
+# METRICS
+# =========================
+def hitung_mae(df):
+    try:
+        if len(df) < 5:
+            return 0
+        real = df["biaya"].values
+        pred = df["biaya"].shift(1).bfill().values
+        return int(np.mean(np.abs(real - pred)))
+    except:
+        return 0
+
+
+def hitung_mape(df):
+    try:
+        if len(df) < 5:
+            return 0
+        real = df["biaya"].values
+        pred = df["biaya"].shift(1).bfill().values
+        real = np.where(real == 0, 1, real)
+        return round(np.mean(np.abs((real - pred) / real)) * 100, 2)
+    except:
+        return 0
+
+
+# =========================
 # CORE LOGIC
 # =========================
 def is_pln_mati(voltage):
     return voltage <= 1
 
-def is_load_normal(power):
+
+def is_load_normal(current, power):
     if power < 5:
         return "NO_LOAD"
     elif power > 800:
         return "OVERLOAD"
     return "NORMAL"
+
 
 # =========================
 # ROUTE
@@ -84,13 +127,12 @@ def is_load_normal(power):
 def home():
     return "API AKTIF 🚀"
 
+
 # =========================
 # MAIN API
 # =========================
 @app.route("/data", methods=["POST"])
 def receive_data():
-    global LAST_RETRAIN
-
     try:
         ensure_csv()
 
@@ -98,8 +140,14 @@ def receive_data():
         if not data:
             return jsonify({"error": "No JSON"}), 400
 
+        # =========================
+        # UPDATE TIME
+        # =========================
         SYSTEM_STATE["last_data_time"] = time.time()
 
+        # =========================
+        # PARSE SENSOR
+        # =========================
         voltage = to_float(data.get("voltage", 0))
         current = to_float(data.get("current", 0))
         power   = to_float(data.get("power", 0))
@@ -107,116 +155,81 @@ def receive_data():
         biaya   = to_float(data.get("biaya", 0))
 
         now = datetime.utcnow() + timedelta(hours=7)
-        
-        # PLN STATE
+        waktu = now.strftime("%d-%m-%Y %H:%M:%S")
+
+        print("DEBUG:", voltage, current, power)
+
+        # =========================
+        # SOURCE STATE (PLN)
         # =========================
         pln_mati = is_pln_mati(voltage)
-        SYSTEM_STATE["pln_on"] = not pln_mati
+        pln_on = not pln_mati
 
-        # 🔥 DETEKSI PLN KEMBALI (SATU-SATUNYA TEMPAT)
-        pln_kembali = False
-        if not SYSTEM_STATE["last_pln_on"] and SYSTEM_STATE["pln_on"]:
-            pln_kembali = True
-
-        # 🔥 DEBUG DI SINI (BENAR)
-        print("PLN STATE:",
-            "NOW:", SYSTEM_STATE["pln_on"],
-            "LAST:", SYSTEM_STATE["last_pln_on"],
-            "KEMBALI:", pln_kembali)
-
-        # 🔥 UPDATE STATE (WAJIB DI SINI, JANGAN DI BAWAH)
-        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
+        SYSTEM_STATE["pln_on"] = pln_on
 
         # =========================
         # LOAD ANALYSIS
         # =========================
-        load_status = is_load_normal(power)
-        load_type = classify_load(power)
+        load_status = is_load_normal(current, power)
 
+        # =========================
+        # STATE LOAD FILE
+        # =========================
         df_old = load_csv_safe(FILE)
 
-        if len(df_old) > 0:
-            df_old["timestamp"] = pd.to_datetime(df_old["timestamp"], errors='coerce')
-
-        # =========================
-        # STATISTICAL
-        # =========================
-        if len(df_old) < 5:
-            power_mean, power_std = 0, 0
-            voltage_mean, voltage_std = 0, 0
-        else:
-            power_mean = df_old["power"].mean()
-            power_std = df_old["power"].std()
-            voltage_mean = df_old["voltage"].mean()
-            voltage_std = df_old["voltage"].std()
-
-        anomaly = False
-        if power_std > 0 and voltage_std > 0:
-            anomaly = detect_anomaly(
-                power, voltage,
-                power_mean, power_std,
-                voltage_mean, voltage_std
-            )
+        for col in ["power", "biaya"]:
+            if col not in df_old.columns:
+                df_old[col] = 0
 
         # =========================
         # LABELING
         # =========================
         if pln_mati:
             label = "PLN_MATI"
-
-        elif current > 8 and voltage < 120 and power > 100:
-            label = "KONSLETING"
-
         elif load_status == "NO_LOAD":
             label = "NO_LOAD"
-
         elif load_status == "OVERLOAD":
-            label = "OVERLOAD"
-
-        elif power_std > 10 and power > power_mean + 3 * power_std:
-            label = "ANOMALY_SPIKE"
-
-        elif voltage_std > 0 and voltage < voltage_mean - 2 * voltage_std:
-            label = "VOLTAGE_ANOMALY"
-
+            label = "KONSLETING"
         elif voltage < 180 and power > 50:
             label = "VOLTAGE_DROP"
-
         elif power > 300:
             label = "BOROS"
-
         elif power > 100:
             label = "WASPADA"
-
         else:
             label = "NORMAL"
 
         # =========================
-        # AI
+        # ANALYTICS
+        # =========================
+        total = biaya if len(df_old) == 0 else df_old["biaya"].sum()
+        rata = biaya if len(df_old) == 0 else df_old["biaya"].mean()
+        pred_bulanan = rata * 30
+
+        trend = "STABIL"
+        if len(df_old) > 5:
+            last5 = df_old["biaya"].tail(5).values
+            if last5[-1] > last5[0]:
+                trend = "NAIK 📈"
+            elif last5[-1] < last5[0]:
+                trend = "TURUN 📉"
+
+        # =========================
+        # AI PREDICTION
         # =========================
         try:
             prediksi_ai, conf_ai = prediksi_besok(df_old)
-        except Exception as e:
-            print("❌ AI ERROR:", e)
-            prediksi_ai = biaya
+        except:
+            prediksi_ai = rata
             conf_ai = 0.5
 
-        label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
+        mae = hitung_mae(df_old)
+        mape = hitung_mape(df_old)
+
         confidence = int(conf_ai * 100)
 
-        if confidence < 60 and label == "CRITICAL_ANOMALY":
-            label = "NORMAL"
-
-        # 🔥 DEBUG DATA
-        print("DATA MASUK:",
-              "V:", voltage,
-              "I:", current,
-              "P:", power,
-              "LABEL:", label,
-              "CONF:", confidence)
-
         # =========================
-        # SAVE
+        # SAVE DATA
         # =========================
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -232,46 +245,48 @@ def receive_data():
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
         # =========================
-        # MESSAGE
+        # MESSAGE BUILD
         # =========================
-        if pln_kembali and voltage > 180:
-            pesan = "✅ PLN MENYALA KEMBALI"
-
-        elif label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY"]:
+        if label == "KONSLETING":
             pesan = "🚨 BAHAYA KONSLETING!"
-
-        elif label in ["PLN_MATI", "CRITICAL_OFF"]:
+        elif label == "PLN_MATI":
             pesan = "⚫ PLN MATI!"
-
+        elif label == "NO_LOAD":
+            pesan = "💤 Tidak ada beban listrik"
+        elif label == "VOLTAGE_DROP":
+            pesan = "⚠️ Tegangan turun!"
         else:
-            pesan = f"⚡ Status: {label} | {voltage}V | {power}W"
+            pesan = (
+                f"⚡ MONITORING LISTRIK\n\n"
+                f"🕒 {waktu}\n\n"
+                f"🔌 {voltage:.1f} V\n"
+                f"⚡ {current:.2f} A\n"
+                f"💡 {power:.1f} W\n\n"
+                f"📊 Status: {label}\n"
+                f"💰 Total: Rp {int(total)}\n"
+                f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
+                f"📊 Trend: {trend}\n\n"
+                f"🤖 Prediksi: Rp {int(prediksi_ai)}\n"
+                f"📊 Confidence: {confidence}%"
+            )
 
         # =========================
-        # NOTIF
+        # SMART NOTIFICATION
         # =========================
         now_time = time.time()
 
-        is_critical = label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY", "CRITICAL_OFF"]
+        if (label != SYSTEM_STATE["last_status"] or
+                now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL):
 
-        kirim_interval = (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL)
-
-        if (
-            is_critical or
-            pln_kembali or
-            kirim_interval  # 🔥 ini yang bikin monitoring jalan lagi
-        ):
-            try:
-                kirim_notif(pesan)
-            except Exception as e:
-                print("❌ TELEGRAM ERROR:", e)
-
+            kirim_notif(pesan)
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
-      
 
         return jsonify({
             "status": "ok",
             "label": label,
+            "mae": mae,
+            "mape": mape,
             "confidence": confidence
         })
 
@@ -281,7 +296,7 @@ def receive_data():
 
 
 # =========================
-# BACKGROUND MONITOR
+# BACKGROUND MONITOR (NO DATA)
 # =========================
 def cek_listrik_mati():
     while True:
@@ -292,7 +307,7 @@ def cek_listrik_mati():
                 kirim_notif("⚠️ SENSOR TIDAK MENGIRIM DATA")
 
                 if not SYSTEM_STATE["pln_on"]:
-                    kirim_notif("⚫ PLN MATI (NO DATA)")
+                    kirim_notif("⚫ PLN MATI (NO DATA + VOLT 0)")
 
                 SYSTEM_STATE["no_data_sent"] = True
         else:
@@ -303,8 +318,9 @@ def cek_listrik_mati():
 
 threading.Thread(target=cek_listrik_mati, daemon=True).start()
 
+
 # =========================
-# RUN
+# RUN APP
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
