@@ -142,7 +142,7 @@ def receive_data():
         # =========================
         # 🔥 DETEKSI ON/OFF (FIX TOTAL)
         # =========================
-        is_on = not (voltage < 50 or power < 1)
+        is_on = voltage >= 50
         print("DEBUG STATUS:",
             "V=", voltage,
             "P=", power,
@@ -168,7 +168,7 @@ def receive_data():
         if voltage < 50:
             label = "PLN_MATI"
         elif power <= 1:
-            label = "OFF"
+            label = "NO_LOAD"  
         elif power > 800 and len(df_old)>0 and abs(power-df_old["power"].iloc[-1])>300:
             label = "KONSLETING"
         elif voltage < 180 and power > 50:
@@ -224,15 +224,28 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
-        # =========================
-        # PESAN
-        # =========================
+
+# PESAN
+# =========================
         if label == "KONSLETING":
             pesan = "🚨 BAHAYA KONSLETING!"
+
+            # 🔧 MODE TEST (tanpa relay)
+            print("🔌 [TEST] RELAY OFF HARUSNYA AKTIF DI SINI")
+
+            try:
+                print("🔌 [TEST] Kirim ke ESP32 (dummy)")
+                # requests.get("http://192.168.1.10/relay_off", timeout=2)
+            except:
+                pass
+
         elif label == "PLN_MATI":
             pesan = "⚫ PLN MATI!"
+        elif label == "NO_LOAD":
+            pesan = "💤 Tidak ada beban listrik"
         elif label == "VOLTAGE_DROP":
             pesan = "⚠️ Tegangan turun!"
+
         else:
             pesan = (
                 f"⚡ MONITORING LISTRIK\n\n"
