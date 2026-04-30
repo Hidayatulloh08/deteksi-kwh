@@ -1,12 +1,13 @@
 import numpy as np
 import pandas as pd
 from tensorflow.keras.models import load_model
-from sklearn.preprocessing import MinMaxScaler
+import joblib
 import os
 
 FILE = "data.csv"
 MODEL = "model_lstm.keras"
-WINDOW = 14  # 🔥 samakan dengan training
+SCALER = "scaler.save"
+WINDOW = 14
 
 # ===== LOAD DATA =====
 if not os.path.exists(FILE):
@@ -19,19 +20,33 @@ if 'biaya' not in data.columns:
     print("❌ Kolom biaya tidak ada")
     exit()
 
-# 🔥 smoothing (harus sama dengan training)
+# ===== SMOOTHING =====
 data['biaya'] = data['biaya'].rolling(window=3).mean()
 data = data.dropna()
+
+# ===== TAMBAH FITUR =====
+if 'timestamp' in data.columns:
+    data['timestamp'] = pd.to_datetime(data['timestamp'], errors='coerce')
+else:
+    data['timestamp'] = pd.Timestamp.now()
+
+data['hour'] = data['timestamp'].dt.hour.fillna(0)
+data['day'] = data['timestamp'].dt.day.fillna(0)
 
 if len(data) < WINDOW:
     print("❌ Data kurang dari", WINDOW)
     exit()
 
-dataset = data[['biaya']].values
+# ===== DATASET MULTI FEATURE =====
+dataset = data[['biaya', 'hour', 'day']].values
 
-# ===== SCALER =====
-scaler = MinMaxScaler()
-scaled = scaler.fit_transform(dataset)
+# ===== LOAD SCALER =====
+if not os.path.exists(SCALER):
+    print("❌ scaler.save tidak ditemukan")
+    exit()
+
+scaler = joblib.load(SCALER)
+scaled = scaler.transform(dataset)
 
 # ===== LOAD MODEL =====
 try:
@@ -42,24 +57,32 @@ except:
 
 # ===== PREDIKSI =====
 last = scaled[-WINDOW:]
-X_test = np.array([last[:, 0]]).reshape((1, WINDOW, 1))
+X_test = np.array([last])
 
 pred = model.predict(X_test, verbose=0)
-pred_real = scaler.inverse_transform(pred)
+
+# ambil hanya kolom biaya
+pred_full = np.zeros((1, 3))
+pred_full[0, 0] = pred[0][0]
+
+pred_real = scaler.inverse_transform(pred_full)
 
 hasil = float(pred_real[0][0])
 
 # ===== ANALISIS =====
-rata = dataset.mean()
+rata = data['biaya'].mean()
 estimasi = rata * 30
 
-# ===== ERROR (OPSIONAL, UNTUK EVALUASI) =====
-actual = dataset[-1][0]
+# ===== ERROR =====
+actual = data['biaya'].iloc[-1]
 mae = abs(actual - hasil)
 
 mape = 0
 if actual != 0:
     mape = (mae / actual) * 100
+
+# ===== CONFIDENCE =====
+confidence = 100 - min(100, int(mape))
 
 # ===== OUTPUT =====
 print("\n===== HASIL PREDIKSI =====")
@@ -68,8 +91,9 @@ print("📊 Rata harian:", int(rata))
 print("📈 Estimasi bulanan:", int(estimasi))
 
 print("\n===== EVALUASI =====")
-print("📉 MAE:", round(mae,2))
-print("📊 MAPE:", round(mape,2), "%")
+print("📉 MAE:", round(mae, 2))
+print("📊 MAPE:", round(mape, 2), "%")
+print("📊 Confidence:", confidence, "%")
 
 # ===== DECISION =====
 if estimasi > 350000:
