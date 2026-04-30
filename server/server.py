@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify
-from datetime import datetime
 import pandas as pd
 import time
 import os
@@ -27,7 +26,7 @@ last_status = None
 last_data_time = time.time()
 
 load_ai()
-threading.Thread(target=cek_listrik_mati, daemon=True).start()
+
 # =========================
 # FILE SETUP
 # =========================
@@ -112,9 +111,11 @@ def receive_data():
 
         data = request.get_json()
         if not data:
-            return jsonify({"error":"No JSON"}),400
-            global last_data_time
-            last_data_time = time.time()
+          return jsonify({"error":"No JSON"}),400
+
+        global last_data_time
+        last_data_time = time.time()
+
         print("DEBUG JSON:", data)
         voltage = to_float(data.get("voltage", 0))
         current = to_float(data.get("current", 0))
@@ -285,5 +286,6 @@ def cek_listrik_mati():
             last_data_time = now
 
         time.sleep(5)
+        threading.Thread(target=cek_listrik_mati, daemon=True).start()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
