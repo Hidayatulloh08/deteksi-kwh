@@ -8,11 +8,9 @@ import threading
 from datetime import datetime, timedelta
 
 # 🔥 TAMBAHAN SINTA 2 (TIDAK MENGUBAH SISTEM LAMA)
-from ml_pipeline.retrain import check_drift, retrain
+from ml_pipeline.drift import check_drift, detect_anomaly
 from ml_pipeline.fusion import fusion_engine
 from ml_pipeline.load_classifier import classify_load
-from ml_pipeline.drift import detect_anomaly
-
 # =========================
 # PATH SETUP
 # =========================
