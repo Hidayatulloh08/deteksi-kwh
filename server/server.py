@@ -184,12 +184,15 @@ def receive_data():
         if pln_mati:
             label = "PLN_MATI"
 
+        # 🔥 TAMBAHKAN DI SINI (PALING ATAS SETELAH PLN)
+        elif current > 8 and voltage < 100:
+            label = "KONSLETING"
+
         elif load_status == "NO_LOAD":
             label = "NO_LOAD"
 
         elif load_status == "OVERLOAD":
-            label = "KONSLETING"
-
+            label = "OVERLOAD"  # 
         elif power_std > 0 and power > power_mean + 3 * power_std:
             label = "ANOMALY_SPIKE"
 
@@ -247,6 +250,10 @@ def receive_data():
         mape = hitung_mape(df_old)
         confidence = int(conf_ai * 100)
 
+        # 🔥 FILTER AI LEMAH
+        if confidence < 60 and label in ["CRITICAL_ANOMALY", "CRITICAL_SHORT"]:
+            print("⚠️ Skip: confidence rendah")
+            label = "NORMAL"
         # =========================
         # SAVE
         # =========================
@@ -275,7 +282,7 @@ def receive_data():
         # =========================
         # MESSAGE (FIXED)
         # =========================
-        if label in ["KONSLETING", "CRITICAL_ANOMALY"]:
+        if label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY"]:
             pesan = "🚨 BAHAYA KONSLETING!"
         elif label in ["PLN_MATI", "CRITICAL_OFF"]:
             pesan = "⚫ PLN MATI!"
@@ -304,11 +311,12 @@ def receive_data():
         # =========================
         now_time = time.time()
 
+        is_critical = label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY", "CRITICAL_OFF"]
+
         if (
-            label != SYSTEM_STATE["last_status"] or
-            now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL or
-            label in ["CRITICAL_OFF", "CRITICAL_ANOMALY"]
-        ):
+            (label != SYSTEM_STATE["last_status"] and is_critical) or
+            (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL and is_critical)
+            ):
             try:
                 kirim_notif(pesan)
             except Exception as e:
