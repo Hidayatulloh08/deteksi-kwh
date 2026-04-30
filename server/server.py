@@ -7,6 +7,12 @@ import numpy as np
 import threading
 from datetime import datetime, timedelta
 
+# 🔥 TAMBAHAN SINTA 2 (TIDAK MENGUBAH SISTEM LAMA)
+from ml_pipeline.retrain import check_drift, retrain
+from ml_pipeline.fusion import fusion_engine
+from ml_pipeline.load_classifier import classify_load
+from ml_pipeline.drift import detect_anomaly
+
 # =========================
 # PATH SETUP
 # =========================
@@ -27,7 +33,7 @@ ERROR_FILE = "data/error_log.csv"
 STATE_FILE = "data/state.txt"
 
 # =========================
-# GLOBAL STATE (CENTRALIZED)
+# GLOBAL STATE
 # =========================
 SYSTEM_STATE = {
     "pln_on": True,
@@ -77,7 +83,6 @@ def save_last_state(state):
             f.write("1" if state else "0")
     except:
         pass
-
 
 # =========================
 # METRICS
@@ -140,14 +145,8 @@ def receive_data():
         if not data:
             return jsonify({"error": "No JSON"}), 400
 
-        # =========================
-        # UPDATE TIME
-        # =========================
         SYSTEM_STATE["last_data_time"] = time.time()
 
-        # =========================
-        # PARSE SENSOR
-        # =========================
         voltage = to_float(data.get("voltage", 0))
         current = to_float(data.get("current", 0))
         power   = to_float(data.get("power", 0))
@@ -160,12 +159,10 @@ def receive_data():
         print("DEBUG:", voltage, current, power)
 
         # =========================
-        # SOURCE STATE (PLN)
+        # PLN STATE
         # =========================
         pln_mati = is_pln_mati(voltage)
-        pln_on = not pln_mati
-
-        SYSTEM_STATE["pln_on"] = pln_on
+        SYSTEM_STATE["pln_on"] = not pln_mati
 
         # =========================
         # LOAD ANALYSIS
@@ -173,29 +170,65 @@ def receive_data():
         load_status = is_load_normal(current, power)
 
         # =========================
-        # STATE LOAD FILE
+        # LOAD DATA
         # =========================
         df_old = load_csv_safe(FILE)
 
-        for col in ["power", "biaya"]:
+        for col in ["power", "biaya", "voltage"]:
             if col not in df_old.columns:
                 df_old[col] = 0
+
+        # =========================
+        # STATISTICAL ANOMALY
+        # =========================
+        if len(df_old) < 5:
+            power_mean, power_std = 0, 0
+            voltage_mean, voltage_std = 0, 0
+        else:
+            power_mean = df_old["power"].mean()
+            power_std = df_old["power"].std()
+
+            voltage_mean = df_old["voltage"].mean()
+            voltage_std = df_old["voltage"].std()
+
+        # 🔥 TAMBAHAN SINTA 2
+        load_type = classify_load(power)
+
+        anomaly = False
+        if power_std > 0 and voltage_std > 0:
+            anomaly = detect_anomaly(
+                power, voltage,
+                power_mean, power_std,
+                voltage_mean, voltage_std
+            )
 
         # =========================
         # LABELING
         # =========================
         if pln_mati:
             label = "PLN_MATI"
+
         elif load_status == "NO_LOAD":
             label = "NO_LOAD"
+
         elif load_status == "OVERLOAD":
             label = "KONSLETING"
+
+        elif power_std > 0 and power > power_mean + 3 * power_std:
+            label = "ANOMALY_SPIKE"
+
+        elif voltage_std > 0 and voltage < voltage_mean - 2 * voltage_std:
+            label = "VOLTAGE_ANOMALY"
+
         elif voltage < 180 and power > 50:
             label = "VOLTAGE_DROP"
+
         elif power > 300:
             label = "BOROS"
+
         elif power > 100:
             label = "WASPADA"
+
         else:
             label = "NORMAL"
 
@@ -215,7 +248,7 @@ def receive_data():
                 trend = "TURUN 📉"
 
         # =========================
-        # AI PREDICTION
+        # AI
         # =========================
         try:
             prediksi_ai, conf_ai = prediksi_besok(df_old)
@@ -223,9 +256,11 @@ def receive_data():
             prediksi_ai = rata
             conf_ai = 0.5
 
+        # 🔥 FUSION ENGINE
+        label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
+
         mae = hitung_mae(df_old)
         mape = hitung_mape(df_old)
-
         confidence = int(conf_ai * 100)
 
         # =========================
@@ -244,8 +279,16 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
+        # 🔥 AUTO RETRAIN
+        try:
+            if len(df_old) > 50 and check_drift(df_old):
+                print("⚠️ DRIFT → RETRAIN")
+                retrain()
+        except Exception as e:
+            print("⚠️ RETRAIN ERROR:", e)
+
         # =========================
-        # MESSAGE BUILD
+        # MESSAGE
         # =========================
         if label == "KONSLETING":
             pesan = "🚨 BAHAYA KONSLETING!"
@@ -263,6 +306,7 @@ def receive_data():
                 f"⚡ {current:.2f} A\n"
                 f"💡 {power:.1f} W\n\n"
                 f"📊 Status: {label}\n"
+                f"🔌 Beban: {load_type}\n"
                 f"💰 Total: Rp {int(total)}\n"
                 f"📈 Bulanan: Rp {int(pred_bulanan)}\n"
                 f"📊 Trend: {trend}\n\n"
@@ -271,12 +315,12 @@ def receive_data():
             )
 
         # =========================
-        # SMART NOTIFICATION
+        # NOTIF
         # =========================
         now_time = time.time()
 
         if (label != SYSTEM_STATE["last_status"] or
-                now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL):
+            now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL):
 
             kirim_notif(pesan)
             SYSTEM_STATE["last_status"] = label
@@ -296,7 +340,7 @@ def receive_data():
 
 
 # =========================
-# BACKGROUND MONITOR (NO DATA)
+# BACKGROUND MONITOR
 # =========================
 def cek_listrik_mati():
     while True:
@@ -318,9 +362,8 @@ def cek_listrik_mati():
 
 threading.Thread(target=cek_listrik_mati, daemon=True).start()
 
-
 # =========================
-# RUN APP
+# RUN
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
