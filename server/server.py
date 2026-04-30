@@ -280,12 +280,12 @@ def cek_listrik_mati():
 
         if now - last_data_time > 10:
             print("⚠️ TIDAK ADA DATA → ANGGAP MATI")
-
             kirim_notif("⚫ PLN MATI (NO DATA)")
-
             last_data_time = now
 
         time.sleep(5)
-        threading.Thread(target=cek_listrik_mati, daemon=True).start()
+
+# ✅ JALANKAN SEKALI SAJA
+threading.Thread(target=cek_listrik_mati, daemon=True).start()
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
