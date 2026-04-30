@@ -7,15 +7,16 @@ import numpy as np
 import threading
 from datetime import datetime, timedelta
 
-# 🔥 TAMBAHAN SINTA 2 (TIDAK MENGUBAH SISTEM LAMA)
+# 🔥 TAMBAHAN SINTA 2
 from ml_pipeline.drift import check_drift, detect_anomaly
 from ml_pipeline.fusion import fusion_engine
 from ml_pipeline.load_classifier import classify_load
 from ml_pipeline.retrain import retrain
+
 # =========================
 # PATH SETUP
 # =========================
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from utils.helper import to_float, load_csv_safe
 from utils.notifier import kirim_notif
@@ -29,7 +30,6 @@ app = Flask(__name__)
 # =========================
 FILE = "data/data.csv"
 ERROR_FILE = "data/error_log.csv"
-STATE_FILE = "data/state.txt"
 
 # =========================
 # GLOBAL STATE
@@ -42,7 +42,7 @@ SYSTEM_STATE = {
     "no_data_sent": False
 }
 
-lock = threading.Lock()
+LAST_RETRAIN = 0
 
 load_ai()
 
@@ -62,26 +62,6 @@ def ensure_csv():
         pd.DataFrame(columns=["timestamp","mae","mape"]).to_csv(ERROR_FILE, index=False)
 
 ensure_csv()
-
-# =========================
-# STATE PERSISTENCE
-# =========================
-def load_last_state():
-    try:
-        if not os.path.exists(STATE_FILE):
-            return None
-        with open(STATE_FILE, "r") as f:
-            return f.read().strip() == "1"
-    except:
-        return None
-
-
-def save_last_state(state):
-    try:
-        with open(STATE_FILE, "w") as f:
-            f.write("1" if state else "0")
-    except:
-        pass
 
 # =========================
 # METRICS
@@ -116,7 +96,7 @@ def is_pln_mati(voltage):
     return voltage <= 1
 
 
-def is_load_normal(current, power):
+def is_load_normal(power):
     if power < 5:
         return "NO_LOAD"
     elif power > 800:
@@ -137,6 +117,8 @@ def home():
 # =========================
 @app.route("/data", methods=["POST"])
 def receive_data():
+    global LAST_RETRAIN
+
     try:
         ensure_csv()
 
@@ -155,8 +137,6 @@ def receive_data():
         now = datetime.utcnow() + timedelta(hours=7)
         waktu = now.strftime("%d-%m-%Y %H:%M:%S")
 
-        print("DEBUG:", voltage, current, power)
-
         # =========================
         # PLN STATE
         # =========================
@@ -166,19 +146,19 @@ def receive_data():
         # =========================
         # LOAD ANALYSIS
         # =========================
-        load_status = is_load_normal(current, power)
+        load_status = is_load_normal(power)
+        load_type = classify_load(power)
 
         # =========================
         # LOAD DATA
         # =========================
         df_old = load_csv_safe(FILE)
 
-        for col in ["power", "biaya", "voltage"]:
-            if col not in df_old.columns:
-                df_old[col] = 0
+        if len(df_old) > 0:
+            df_old["timestamp"] = pd.to_datetime(df_old["timestamp"], errors='coerce')
 
         # =========================
-        # STATISTICAL ANOMALY
+        # STATISTICAL
         # =========================
         if len(df_old) < 5:
             power_mean, power_std = 0, 0
@@ -189,9 +169,6 @@ def receive_data():
 
             voltage_mean = df_old["voltage"].mean()
             voltage_std = df_old["voltage"].std()
-
-        # 🔥 TAMBAHAN SINTA 2
-        load_type = classify_load(power)
 
         anomaly = False
         if power_std > 0 and voltage_std > 0:
@@ -232,10 +209,30 @@ def receive_data():
             label = "NORMAL"
 
         # =========================
-        # ANALYTICS
+        # AI
         # =========================
-        total = biaya if len(df_old) == 0 else df_old["biaya"].sum()
-        rata = biaya if len(df_old) == 0 else df_old["biaya"].mean()
+        try:
+            prediksi_ai, conf_ai = prediksi_besok(df_old)
+        except:
+            prediksi_ai = biaya
+            conf_ai = 0.5
+
+        # 🔥 FUSION
+        label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
+
+        # =========================
+        # ANALYTICS (FIXED)
+        # =========================
+        if len(df_old) > 0:
+            today = datetime.now().date()
+            df_today = df_old[df_old["timestamp"].dt.date == today]
+
+            total = df_today["biaya"].sum()
+            rata = df_today["biaya"].mean() if len(df_today) > 0 else biaya
+        else:
+            total = biaya
+            rata = biaya
+
         pred_bulanan = rata * 30
 
         trend = "STABIL"
@@ -246,24 +243,12 @@ def receive_data():
             elif last5[-1] < last5[0]:
                 trend = "TURUN 📉"
 
-        # =========================
-        # AI
-        # =========================
-        try:
-            prediksi_ai, conf_ai = prediksi_besok(df_old)
-        except:
-            prediksi_ai = rata
-            conf_ai = 0.5
-
-        # 🔥 FUSION ENGINE
-        label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
-
         mae = hitung_mae(df_old)
         mape = hitung_mape(df_old)
         confidence = int(conf_ai * 100)
 
         # =========================
-        # SAVE DATA
+        # SAVE
         # =========================
         row = {
             "timestamp": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -278,20 +263,21 @@ def receive_data():
 
         pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
 
-        # 🔥 AUTO RETRAIN
-        try:
-            if len(df_old) > 50 and check_drift(df_old):
+        # =========================
+        # AUTO RETRAIN (FIXED)
+        # =========================
+        if len(df_old) > 50 and check_drift(df_old):
+            if time.time() - LAST_RETRAIN > 3600:
                 print("⚠️ DRIFT → RETRAIN")
                 retrain()
-        except Exception as e:
-            print("⚠️ RETRAIN ERROR:", e)
+                LAST_RETRAIN = time.time()
 
         # =========================
-        # MESSAGE
+        # MESSAGE (FIXED)
         # =========================
-        if label == "KONSLETING":
+        if label in ["KONSLETING", "CRITICAL_ANOMALY"]:
             pesan = "🚨 BAHAYA KONSLETING!"
-        elif label == "PLN_MATI":
+        elif label in ["PLN_MATI", "CRITICAL_OFF"]:
             pesan = "⚫ PLN MATI!"
         elif label == "NO_LOAD":
             pesan = "💤 Tidak ada beban listrik"
@@ -314,14 +300,20 @@ def receive_data():
             )
 
         # =========================
-        # NOTIF
+        # NOTIF (FIXED)
         # =========================
         now_time = time.time()
 
-        if (label != SYSTEM_STATE["last_status"] or
-            now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL):
+        if (
+            label != SYSTEM_STATE["last_status"] or
+            now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL or
+            label in ["CRITICAL_OFF", "CRITICAL_ANOMALY"]
+        ):
+            try:
+                kirim_notif(pesan)
+            except Exception as e:
+                print("❌ TELEGRAM ERROR:", e)
 
-            kirim_notif(pesan)
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
 

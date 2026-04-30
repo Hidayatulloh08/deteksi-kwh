@@ -1,13 +1,33 @@
 import pandas as pd
+import os
 
-def to_float(val):
+# =========================
+# SAFE FLOAT CONVERTER
+# =========================
+def to_float(value, default=0.0):
     try:
-        return float(val)
+        if value is None:
+            return default
+        return float(value)
     except:
-        return 0.0
+        return default
 
+
+# =========================
+# LOAD CSV AMAN
+# =========================
 def load_csv_safe(path):
     try:
-        return pd.read_csv(path)
-    except:
+        if not os.path.exists(path):
+            return pd.DataFrame()
+
+        df = pd.read_csv(path)
+
+        if df.empty:
+            return pd.DataFrame()
+
+        return df
+
+    except Exception as e:
+        print("❌ ERROR load_csv:", e)
         return pd.DataFrame()
