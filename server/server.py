@@ -185,8 +185,8 @@ def receive_data():
             label = "PLN_MATI"
 
         # 🔥 TAMBAHKAN DI SINI (PALING ATAS SETELAH PLN)
-        elif current > 8 and voltage < 100:
-            label = "KONSLETING"
+        elif current > 8 and voltage < 120 and power > 100:
+            label = "KONSLETING"    
 
         elif load_status == "NO_LOAD":
             label = "NO_LOAD"
@@ -251,7 +251,8 @@ def receive_data():
         confidence = int(conf_ai * 100)
 
         # 🔥 FILTER AI LEMAH
-        if confidence < 60 and label in ["CRITICAL_ANOMALY", "CRITICAL_SHORT"]:
+        # 🔥 FILTER AI LEMAH (JANGAN ganggu konslet real)
+        if confidence < 60 and label == "CRITICAL_ANOMALY":
             print("⚠️ Skip: confidence rendah")
             label = "NORMAL"
         # =========================
