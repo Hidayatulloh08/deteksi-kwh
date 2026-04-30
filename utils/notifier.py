@@ -7,14 +7,26 @@ import os
 TOKEN = os.environ.get("TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-
+LAST_MSG = None
+LAST_TIME = 0
+COOLDOWN = 5  # detik
 # =========================
 # SEND TELEGRAM
 # =========================
 def kirim_notif(pesan):
+    global LAST_MSG, LAST_TIME
+
     if not TOKEN or not CHAT_ID:
         print("❌ TOKEN / CHAT_ID belum diset")
         print("PESAN:", pesan)
+        return False
+
+    import time
+    now = time.time()
+
+    # 🔥 anti spam duplikat
+    if pesan == LAST_MSG and now - LAST_TIME < COOLDOWN:
+        print("⏳ Skip notif duplikat")
         return False
 
     try:
@@ -32,6 +44,10 @@ def kirim_notif(pesan):
             return False
 
         print("📨 NOTIF TERKIRIM")
+
+        LAST_MSG = pesan
+        LAST_TIME = now
+
         return True
 
     except Exception as e:
