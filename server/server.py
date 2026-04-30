@@ -222,7 +222,20 @@ def receive_data():
 
         # 🔥 FUSION
         label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
+        confidence = int(conf_ai * 100)
 
+        # 🔥 FILTER AI LEMAH (JANGAN ganggu konslet real)
+        if confidence < 60 and label == "CRITICAL_ANOMALY":
+            print("⚠️ Skip: confidence rendah")
+            label = "NORMAL"
+
+        # 🔥 DEBUG DATA MASUK (setelah final)
+        print("DATA MASUK:",
+            "V:", voltage,
+            "I:", current,
+            "P:", power,
+            "LABEL:", label,
+            "CONF:", confidence)
         # =========================
         # ANALYTICS (FIXED)
         # =========================
