@@ -248,12 +248,15 @@ def receive_data():
         # NOTIF
         # =========================
         now_time = time.time()
+
         is_critical = label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY", "CRITICAL_OFF"]
 
+        kirim_interval = (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL)
+
         if (
-            (label != SYSTEM_STATE["last_status"] and is_critical) or
-            (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL and is_critical) or
-            pln_kembali
+            is_critical or
+            pln_kembali or
+            kirim_interval  # 🔥 ini yang bikin monitoring jalan lagi
         ):
             try:
                 kirim_notif(pesan)
@@ -262,7 +265,6 @@ def receive_data():
 
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
-
         # 🔥 UPDATE STATE DI AKHIR (PENTING)
         SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
 
