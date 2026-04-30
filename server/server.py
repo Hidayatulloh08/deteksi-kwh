@@ -36,7 +36,7 @@ ERROR_FILE = "data/error_log.csv"
 # =========================
 SYSTEM_STATE = {
     "pln_on": True,
-    "last_pln_on": True,  # 🔥 FIX WAJIB
+    "last_pln_on": True,  # penting untuk deteksi transisi
     "last_status": None,
     "last_notif_time": 0,
     "last_data_time": time.time(),
@@ -65,37 +65,10 @@ def ensure_csv():
 ensure_csv()
 
 # =========================
-# METRICS
-# =========================
-def hitung_mae(df):
-    try:
-        if len(df) < 5:
-            return 0
-        real = df["biaya"].values
-        pred = df["biaya"].shift(1).bfill().values
-        return int(np.mean(np.abs(real - pred)))
-    except:
-        return 0
-
-
-def hitung_mape(df):
-    try:
-        if len(df) < 5:
-            return 0
-        real = df["biaya"].values
-        pred = df["biaya"].shift(1).bfill().values
-        real = np.where(real == 0, 1, real)
-        return round(np.mean(np.abs((real - pred) / real)) * 100, 2)
-    except:
-        return 0
-
-
-# =========================
 # CORE LOGIC
 # =========================
 def is_pln_mati(voltage):
     return voltage <= 1
-
 
 def is_load_normal(power):
     if power < 5:
@@ -104,14 +77,12 @@ def is_load_normal(power):
         return "OVERLOAD"
     return "NORMAL"
 
-
 # =========================
 # ROUTE
 # =========================
 @app.route("/")
 def home():
     return "API AKTIF 🚀"
-
 
 # =========================
 # MAIN API
@@ -136,7 +107,6 @@ def receive_data():
         biaya   = to_float(data.get("biaya", 0))
 
         now = datetime.utcnow() + timedelta(hours=7)
-        waktu = now.strftime("%d-%m-%Y %H:%M:%S")
 
         # =========================
         # PLN STATE
@@ -144,12 +114,16 @@ def receive_data():
         pln_mati = is_pln_mati(voltage)
         SYSTEM_STATE["pln_on"] = not pln_mati
 
-        # 🔥 DETEKSI PLN KEMBALI
+        # 🔥 DETEKSI PLN KEMBALI (JANGAN UPDATE DULU)
         pln_kembali = False
-        if SYSTEM_STATE["last_pln_on"] == False and SYSTEM_STATE["pln_on"] == True:
+        if not SYSTEM_STATE["last_pln_on"] and SYSTEM_STATE["pln_on"]:
             pln_kembali = True
 
-        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
+        # 🔥 DEBUG PLN STATE
+        print("PLN STATE:",
+              "NOW:", SYSTEM_STATE["pln_on"],
+              "LAST:", SYSTEM_STATE["last_pln_on"],
+              "KEMBALI:", pln_kembali)
 
         # =========================
         # LOAD ANALYSIS
@@ -197,7 +171,7 @@ def receive_data():
         elif load_status == "OVERLOAD":
             label = "OVERLOAD"
 
-        elif power_std > 0 and power > power_mean + 3 * power_std:
+        elif power_std > 10 and power > power_mean + 3 * power_std:
             label = "ANOMALY_SPIKE"
 
         elif voltage_std > 0 and voltage < voltage_mean - 2 * voltage_std:
@@ -220,18 +194,18 @@ def receive_data():
         # =========================
         try:
             prediksi_ai, conf_ai = prediksi_besok(df_old)
-        except:
+        except Exception as e:
+            print("❌ AI ERROR:", e)
             prediksi_ai = biaya
             conf_ai = 0.5
 
         label = fusion_engine(label, anomaly, prediksi_ai, conf_ai)
         confidence = int(conf_ai * 100)
 
-        # 🔥 FILTER AI
         if confidence < 60 and label == "CRITICAL_ANOMALY":
             label = "NORMAL"
 
-        # 🔥 DEBUG
+        # 🔥 DEBUG DATA
         print("DATA MASUK:",
               "V:", voltage,
               "I:", current,
@@ -271,7 +245,7 @@ def receive_data():
             pesan = f"⚡ Status: {label} | {voltage}V | {power}W"
 
         # =========================
-        # NOTIF (FIX)
+        # NOTIF
         # =========================
         now_time = time.time()
         is_critical = label in ["CRITICAL_SHORT", "CRITICAL_ANOMALY", "CRITICAL_OFF"]
@@ -281,9 +255,16 @@ def receive_data():
             (now_time - SYSTEM_STATE["last_notif_time"] > NOTIF_INTERVAL and is_critical) or
             pln_kembali
         ):
-            kirim_notif(pesan)
+            try:
+                kirim_notif(pesan)
+            except Exception as e:
+                print("❌ TELEGRAM ERROR:", e)
+
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
+
+        # 🔥 UPDATE STATE DI AKHIR (PENTING)
+        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
 
         return jsonify({
             "status": "ok",
