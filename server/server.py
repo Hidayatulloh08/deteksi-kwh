@@ -312,6 +312,7 @@ def cek_listrik_mati():
         time.sleep(5)
 
 threading.Thread(target=cek_listrik_mati, daemon=True).start()
+threading.Thread(target=start_retrain, daemon=True).start()
 # 🔥 JALANKAN AUTO RETRAIN (BACKGROUND)
 # =========================
 # RUN

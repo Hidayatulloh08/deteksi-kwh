@@ -1,84 +1,59 @@
 import numpy as np
 import os
 
-MODEL = None
-SCALER = None
+try:
+    from tensorflow.keras.models import load_model
+    from sklearn.preprocessing import MinMaxScaler
+except:
+    load_model = None
 
+model = None
+scaler = MinMaxScaler()
 
-# =========================
-# LOAD MODEL
-# =========================
+WINDOW = 7  # harus sama dengan config
+
 def load_ai():
-    global MODEL, SCALER
-
+    global model
     try:
-        from tensorflow.keras.models import load_model
-        import joblib
+        if load_model is None:
+            print("⚠️ TensorFlow tidak tersedia")
+            return
 
-        if os.path.exists("model/model_lstm.keras"):
-            MODEL = load_model("model/model_lstm.keras")
-            print("✅ Model AI loaded")
-
-        if os.path.exists("model/scaler.save"):
-            SCALER = joblib.load("model/scaler.save")
-            print("✅ Scaler loaded")
+        if os.path.exists("model_listrik.h5"):
+            model = load_model("model_listrik.h5")
+            print("✅ Model AI berhasil dimuat")
+        else:
+            print("⚠️ Model tidak ditemukan, pakai fallback")
 
     except Exception as e:
-        print("⚠️ AI load gagal:", e)
-        MODEL = None
-        SCALER = None
+        print("❌ ERROR LOAD MODEL:", e)
+        model = None
 
 
-# =========================
-# PREDIKSI BESOK
-# =========================
 def prediksi_besok(df):
     try:
-        if MODEL is None or SCALER is None:
-            return fallback(df)
-
-        if len(df) < 10:
-            return fallback(df)
+        # fallback jika data kurang
+        if df is None or len(df) < WINDOW:
+            return 0, 0.3
 
         data = df["biaya"].values.reshape(-1, 1)
 
-        scaled = SCALER.transform(data)
+        # ===== fallback jika model tidak ada =====
+        if model is None:
+            rata = float(np.mean(data))
+            return rata, 0.5
 
-        X = []
-        window = 5
+        # ===== scaling =====
+        data_scaled = scaler.fit_transform(data)
 
-        for i in range(window, len(scaled)):
-            X.append(scaled[i-window:i])
+        last_data = data_scaled[-WINDOW:]
+        X = np.array([last_data])
 
-        X = np.array(X)
+        pred_scaled = model.predict(X, verbose=0)[0][0]
+        pred_real = scaler.inverse_transform([[pred_scaled]])[0][0]
 
-        if len(X) == 0:
-            return fallback(df)
-
-        last_seq = X[-1].reshape(1, window, 1)
-
-        pred_scaled = MODEL.predict(last_seq, verbose=0)
-        pred = SCALER.inverse_transform(pred_scaled)[0][0]
-
-        confidence = 0.8  # default
-
-        return float(pred), float(confidence)
+        return float(pred_real), 0.85
 
     except Exception as e:
-        print("⚠️ AI ERROR:", e)
-        return fallback(df)
-
-
-# =========================
-# FALLBACK (ANTI CRASH)
-# =========================
-def fallback(df):
-    try:
-        if len(df) == 0:
-            return 0, 0.5
-
-        rata = df["biaya"].mean()
-        return float(rata), 0.5
-
-    except:
-        return 0, 0.5
+        print("❌ ERROR AI:", e)
+        return float(df["biaya"].mean()), 0.4

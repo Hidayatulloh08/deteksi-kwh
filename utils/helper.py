@@ -1,21 +1,13 @@
 import pandas as pd
 import os
 
-# =========================
-# SAFE FLOAT CONVERTER
-# =========================
-def to_float(value, default=0.0):
+def to_float(x):
     try:
-        if value is None:
-            return default
-        return float(value)
+        return float(x)
     except:
-        return default
+        return 0.0
 
 
-# =========================
-# LOAD CSV AMAN
-# =========================
 def load_csv_safe(path):
     try:
         if not os.path.exists(path):
@@ -23,11 +15,13 @@ def load_csv_safe(path):
 
         df = pd.read_csv(path)
 
-        if df.empty:
-            return pd.DataFrame()
+        # pastikan kolom penting ada
+        for col in ["voltage", "current", "power", "kwh", "biaya"]:
+            if col not in df.columns:
+                df[col] = 0
 
         return df
 
     except Exception as e:
-        print("❌ ERROR load_csv:", e)
+        print("❌ ERROR LOAD CSV:", e)
         return pd.DataFrame()
