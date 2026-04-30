@@ -107,23 +107,25 @@ def receive_data():
         biaya   = to_float(data.get("biaya", 0))
 
         now = datetime.utcnow() + timedelta(hours=7)
-
-        # =========================
+        
         # PLN STATE
         # =========================
         pln_mati = is_pln_mati(voltage)
         SYSTEM_STATE["pln_on"] = not pln_mati
 
-        # 🔥 DETEKSI PLN KEMBALI (JANGAN UPDATE DULU)
+        # 🔥 DETEKSI PLN KEMBALI (SATU-SATUNYA TEMPAT)
         pln_kembali = False
         if not SYSTEM_STATE["last_pln_on"] and SYSTEM_STATE["pln_on"]:
             pln_kembali = True
 
-        # 🔥 DEBUG PLN STATE
+        # 🔥 DEBUG DI SINI (BENAR)
         print("PLN STATE:",
-              "NOW:", SYSTEM_STATE["pln_on"],
-              "LAST:", SYSTEM_STATE["last_pln_on"],
-              "KEMBALI:", pln_kembali)
+            "NOW:", SYSTEM_STATE["pln_on"],
+            "LAST:", SYSTEM_STATE["last_pln_on"],
+            "KEMBALI:", pln_kembali)
+
+        # 🔥 UPDATE STATE (WAJIB DI SINI, JANGAN DI BAWAH)
+        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
 
         # =========================
         # LOAD ANALYSIS
@@ -265,8 +267,7 @@ def receive_data():
 
             SYSTEM_STATE["last_status"] = label
             SYSTEM_STATE["last_notif_time"] = now_time
-        # 🔥 UPDATE STATE DI AKHIR (PENTING)
-        SYSTEM_STATE["last_pln_on"] = SYSTEM_STATE["pln_on"]
+      
 
         return jsonify({
             "status": "ok",
