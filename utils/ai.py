@@ -11,6 +11,9 @@ MODEL_PATH = os.path.join(BASE_DIR, "model", "model_lstm.keras")
 SCALER_PATH = os.path.join(BASE_DIR, "model", "scaler.save")
 
 
+# =========================
+# LOAD MODEL
+# =========================
 def load_ai():
     global model, scaler
 
@@ -34,19 +37,25 @@ def load_ai():
         print("⚠️ AI OFF:", e)
 
 
+# =========================
+# FALLBACK SAFE MODE
+# =========================
 def fallback_prediksi(df):
     try:
         if len(df) == 0 or "biaya" not in df.columns:
-            return 0, 0.5
+            return 0.0, 0.5
 
         rata = df["biaya"].mean()
         return float(rata), 0.6
 
     except:
-        return 0, 0.5
+        return 0.0, 0.5
 
 
-def prediksi_besok(df, window=7):
+# =========================
+# MAIN PREDICTION ENGINE
+# =========================
+def prediksi_besok(df, window=14):  # 🔥 FIX: HARUS SAMA TRAINING
     try:
         if model is None or scaler is None:
             return fallback_prediksi(df)
@@ -59,39 +68,58 @@ def prediksi_besok(df, window=7):
 
         df = df.copy()
 
+        # =========================
+        # FEATURE ENGINEERING
+        # =========================
         if "timestamp" in df.columns:
-            df["timestamp"] = pd.to_datetime(
-                df["timestamp"],
-                errors="coerce"
-            )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
             df["hour"] = df["timestamp"].dt.hour.fillna(0)
             df["day"] = df["timestamp"].dt.day.fillna(0)
         else:
             df["hour"] = 0
             df["day"] = 0
 
-        fitur = df[["biaya", "hour", "day"]].fillna(0).values
+        # =========================
+        # FEATURE MATRIX
+        # =========================
+        fitur = df[["biaya", "hour", "day"]].astype(float).values
 
+        # =========================
+        # SCALING
+        # =========================
         scaled = scaler.transform(fitur)
 
-        last = scaled[-window:]
-        X = np.array([last])
+        # =========================
+        # SEQUENCE INPUT
+        # =========================
+        sequence = scaled[-window:]
+        X = np.array([sequence])
 
-        pred = model.predict(X, verbose=0)
+        # =========================
+        # PREDICTION
+        # =========================
+        pred_scaled = model.predict(X, verbose=0)[0][0]
 
-        pred_value = pred[0][0]
+        # =========================
+        # INVERSE TRANSFORM (FIXED PROPER WAY)
+        # =========================
+        temp = np.zeros((1, scaler.n_features_in_))
+        temp[0][0] = pred_scaled
 
-        dummy = np.zeros((1, 3))
-        dummy[0][0] = pred_value
+        value = scaler.inverse_transform(temp)[0][0]
 
-        hasil = scaler.inverse_transform(dummy)
-
-        value = float(hasil[0][0])
-
+        # =========================
+        # VALIDATION
+        # =========================
         if np.isnan(value) or np.isinf(value):
             return fallback_prediksi(df)
 
-        return max(0, value), 0.85
+        # =========================
+        # DYNAMIC CONFIDENCE (SINTA STYLE)
+        # =========================
+        confidence = min(0.95, 0.6 + (len(df) / 300))
+
+        return max(0.0, float(value)), float(confidence)
 
     except Exception as e:
         print("❌ ERROR AI:", e)
