@@ -10,7 +10,6 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 MODEL_PATH = os.path.join(BASE_DIR, "model", "model_lstm.keras")
 SCALER_PATH = os.path.join(BASE_DIR, "model", "scaler.save")
 
-
 # =========================
 # LOAD MODEL
 # =========================
@@ -55,7 +54,7 @@ def fallback_prediksi(df):
 # =========================
 # MAIN PREDICTION ENGINE
 # =========================
-def prediksi_besok(df, window=14):  # 🔥 FIX: HARUS SAMA TRAINING
+def prediksi_besok(df, window=14):
     try:
         if model is None or scaler is None:
             return fallback_prediksi(df)
@@ -101,9 +100,11 @@ def prediksi_besok(df, window=14):  # 🔥 FIX: HARUS SAMA TRAINING
         pred_scaled = model.predict(X, verbose=0)[0][0]
 
         # =========================
-        # INVERSE TRANSFORM (FIXED PROPER WAY)
+        # INVERSE TRANSFORM (SAFE)
         # =========================
-        temp = np.zeros((1, scaler.n_features_in_))
+        n_features = scaler.n_features_in_ if hasattr(scaler, "n_features_in_") else 3
+
+        temp = np.zeros((1, n_features))
         temp[0][0] = pred_scaled
 
         value = scaler.inverse_transform(temp)[0][0]
@@ -115,9 +116,12 @@ def prediksi_besok(df, window=14):  # 🔥 FIX: HARUS SAMA TRAINING
             return fallback_prediksi(df)
 
         # =========================
-        # DYNAMIC CONFIDENCE (SINTA STYLE)
+        # CONFIDENCE SIMPLE (SAFE VERSION)
         # =========================
-        confidence = min(0.95, 0.6 + (len(df) / 300))
+        last_actual = df["biaya"].iloc[-1]
+
+        error = abs(value - last_actual)
+        confidence = max(0.5, 1 - (error / (last_actual + 1)))
 
         return max(0.0, float(value)), float(confidence)
 
