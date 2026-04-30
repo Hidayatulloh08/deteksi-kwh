@@ -11,10 +11,11 @@ from datetime import datetime, timedelta
 from ml_pipeline.drift import check_drift, detect_anomaly
 from ml_pipeline.fusion import fusion_engine
 from ml_pipeline.load_classifier import classify_load
+from ml_pipeline.retrain import retrain
 # =========================
 # PATH SETUP
 # =========================
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from utils.helper import to_float, load_csv_safe
 from utils.notifier import kirim_notif
