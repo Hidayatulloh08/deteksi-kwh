@@ -123,7 +123,8 @@ def deteksi_konslet_temporal(df, current_power):
 # 🔥 HYBRID PROTECTION
 # =========================
 def deteksi_proteksi(voltage, power, df_old):
-
+    if df_old.empty:
+        return "NORMAL"
     # =========================
     # PLN MATI
     # =========================
@@ -207,10 +208,13 @@ def receive_data():
         now_time = time.time()
 
         df_old = load_csv_safe(FILE)
-        if len(df_old) > 0:
-            last_power = df_old["power"].iloc[-1]
-        if abs(power - last_power) > 1000:
-            power = last_power
+        # 🔍 ANTI SPIKE (FIX)
+        # =========================
+        if len(df_old) > 0 and "power" in df_old.columns:
+            last_power = float(df_old["power"].iloc[-1])
+
+            if abs(power - last_power) > 1000:
+                power = last_power
 
         for col in ["power","biaya"]:
             if col not in df_old.columns:
