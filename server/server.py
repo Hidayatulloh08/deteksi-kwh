@@ -123,13 +123,18 @@ def deteksi_konslet_temporal(df, current_power):
 # 🔥 HYBRID PROTECTION
 # =========================
 def deteksi_proteksi(voltage, power, df_old):
-    if df_old.empty:
-        return "NORMAL"
+
     # =========================
-    # PLN MATI
+    # PRIORITAS 1: PLN MATI
     # =========================
     if voltage < 50:
         return "PLN_MATI"
+
+    # =========================
+    # PRIORITAS 2: DATA AWAL
+    # =========================
+    if df_old.empty:
+        return "NORMAL"
 
     # =========================
     # KONSLET (TEMPORAL + ADAPTIVE)
@@ -156,7 +161,6 @@ def deteksi_proteksi(voltage, power, df_old):
         return "NO_LOAD"
 
     return "NORMAL"
-
 
 # =========================
 # ROUTE
