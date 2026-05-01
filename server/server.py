@@ -218,7 +218,6 @@ def receive_data():
         mape = hitung_mape(df_old)
         confidence = int(conf_ai*100)
 
-        # =========================
         # SAVE
         # =========================
         row = {
@@ -232,9 +231,19 @@ def receive_data():
             "label": label
         }
 
-        pd.DataFrame([row]).to_csv(FILE, mode="a", header=False, index=False)
+        # 🔍 DEBUG (letakkan DI SINI)
+        print("📥 DATA MASUK:", row)
+        print("📁 FILE PATH:", FILE)
+        print("📊 FILE ADA:", os.path.exists(FILE))
 
-        # =========================
+        pd.DataFrame([row]).to_csv(
+        FILE,
+        mode="a",
+        header=not os.path.exists(FILE),
+        index=False
+    )
+
+        print("💾 BERHASIL SIMPAN")
         # PESAN
         # =========================
         if label == "KONSLETING":

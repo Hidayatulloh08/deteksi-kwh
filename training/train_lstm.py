@@ -93,3 +93,6 @@ def train_model():
     model.save("model_lstm.keras")
 
     print("✅ Training selesai")
+
+if __name__ == "__main__":
+    train_model()
