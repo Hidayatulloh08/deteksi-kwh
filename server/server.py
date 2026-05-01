@@ -142,6 +142,16 @@ def deteksi_proteksi(voltage, power, df_old):
     if deteksi_konslet_temporal(df_old, power):
         return "KONSLETING"
 
+    if len(df_old) > 10:
+        last10 = df_old["power"].tail(10).values
+
+        changes = sum(
+            abs(last10[i] - last10[i-1]) > 100
+            for i in range(1, len(last10))
+        )
+
+    if changes >= 5:
+            return "DEVICE_CYCLING"
     # =========================
     # DROP TEGANGAN
     # =========================
