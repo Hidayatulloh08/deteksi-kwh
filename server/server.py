@@ -151,11 +151,11 @@ def deteksi_proteksi(voltage, power, df_old):
         last10 = df_old["power"].tail(10).values
 
         changes = sum(
-            abs(last10[i] - last10[i-1]) > 100
+            abs(last10[i] - last10[i-1]) > 80
             for i in range(1, len(last10))
         )
 
-        if changes >= 5:
+        if changes >= 3:
             return "DEVICE_CYCLING"
 
     # =========================
