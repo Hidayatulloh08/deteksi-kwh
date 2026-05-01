@@ -124,10 +124,19 @@ def deteksi_proteksi(voltage, power, df_old):
 # =========================
 # ROUTE
 # =========================
-@app.route("/")
-def home():
-    return "API AKTIF 🚀"
+@app.route("/cek_csv")
+def cek_csv():
+    import pandas as pd
+    import os
 
+    if not os.path.exists(FILE):
+        return {"error": "File tidak ada"}
+
+    try:
+        df = pd.read_csv(FILE)
+        return df.tail(20).to_json(orient="records", indent=2)
+    except Exception as e:
+        return {"error": str(e)}
 # =========================
 # API
 # =========================
