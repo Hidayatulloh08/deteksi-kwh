@@ -5,7 +5,6 @@ import os
 import sys
 import numpy as np
 import threading
-import threading
 from ml_pipeline.retrain import start_retrain
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
@@ -94,22 +93,58 @@ def hitung_mape(df):
         return round(np.mean(np.abs((real - pred)/real))*100, 2)
     except:
         return 0
+# 🔥 TEMPORAL DETECTION
+# =========================
+def deteksi_konslet_temporal(df, current_power):
+    if len(df) < 5:
+        return False
 
+    last5 = df["power"].tail(5).tolist()
+    last5.append(current_power)
+
+    avg = np.mean(last5)
+    std = np.std(last5)
+
+    if std == 0:
+        std = 1
+
+    high_threshold = avg + (2 * std)
+
+    # mayoritas tinggi
+    if sum(p > high_threshold for p in last5) >= 3:
+        return True
+
+    # lonjakan ekstrem
+    if max(last5) - min(last5) > (2 * std + 100):
+        return True
+
+    return False
 # =========================
 # 🔥 HYBRID PROTECTION
 # =========================
 def deteksi_proteksi(voltage, power, df_old):
 
+    # =========================
+    # PLN MATI
+    # =========================
     if voltage < 50:
         return "PLN_MATI"
 
-    if power > 800 and len(df_old) > 0:
-        if abs(power - df_old["power"].iloc[-1]) > 300:
-            return "KONSLETING"
+    # =========================
+    # KONSLET (TEMPORAL + ADAPTIVE)
+    # =========================
+    if deteksi_konslet_temporal(df_old, power):
+        return "KONSLETING"
 
+    # =========================
+    # DROP TEGANGAN
+    # =========================
     if voltage < 180 and power > 50:
         return "VOLTAGE_DROP"
 
+    # =========================
+    # RULE BASED (LEVEL)
+    # =========================
     if power > 300:
         return "BOROS"
 
@@ -120,6 +155,7 @@ def deteksi_proteksi(voltage, power, df_old):
         return "NO_LOAD"
 
     return "NORMAL"
+
 
 # =========================
 # ROUTE
@@ -159,11 +195,22 @@ def receive_data():
         kwh     = to_float(data.get("kwh", 0))
         biaya   = to_float(data.get("biaya", 0))
 
+        # filter data aneh 
+        if power < 0: 
+            power = 0 
+
+        if voltage < 0 or voltage > 260: 
+            return jsonify({"error": "Invalid voltage"}), 400
+            
         now = datetime.utcnow() + timedelta(hours=7)
         waktu = now.strftime("%d-%m-%Y %H:%M:%S")
         now_time = time.time()
 
         df_old = load_csv_safe(FILE)
+        if len(df_old) > 0:
+            last_power = df_old["power"].iloc[-1]
+        if abs(power - last_power) > 1000:
+            power = last_power
 
         for col in ["power","biaya"]:
             if col not in df_old.columns:
@@ -282,10 +329,17 @@ def receive_data():
         # =========================
         # NOTIF
         # =========================
+        # =========================
+# NOTIF
+# =========================
+        HOLD_TIME = 10  # detik
+
         if status != last_status:
-            kirim_notif(pesan)
-            last_status = status
-            last_notif_time = now_time
+            if now_time - last_notif_time > HOLD_TIME:
+                kirim_notif(pesan)
+                last_status = status
+                last_notif_time = now_time
+
         elif now_time - last_notif_time > NOTIF_INTERVAL:
             kirim_notif(pesan)
             last_notif_time = now_time
